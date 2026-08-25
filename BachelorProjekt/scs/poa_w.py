@@ -1,0 +1,35 @@
+from toychain.src.State import StateMixin
+from loop_functions.params import params as lp
+
+import logging
+logger = logging.getLogger('sc')
+
+class Contract(StateMixin):
+
+    def __init__(self, state_variables = None):
+
+        if state_variables is not None:
+            for var, value in state_variables.items(): setattr(self, var, value)     
+
+        else:
+            self.n           = 0
+            self.private     = {}
+            self.balances    = {}
+  
+            # Init your own state variables
+            self.all_hellos  = {}
+            self.trans = 0
+            
+    
+    def Hello(self, neighbor):
+
+        self.all_hellos.setdefault(neighbor, [])
+        self.all_hellos[neighbor] += self.msg.sender
+
+        logger.info(f"Robot {self.msg.sender} greeted {neighbor} !")
+
+
+    def get_block_reward(self,block):
+        
+        return len(block.data)
+    
