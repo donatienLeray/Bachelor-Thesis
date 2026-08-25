@@ -142,7 +142,7 @@ run() {
 #CFG=test
 #
 ## Explorer
-#config "EXPLORER" "False"
+#config "EXPLORER" "True"
 #
 ## standard values
 #config "TPS" 10
@@ -192,170 +192,170 @@ loopconfig "debug" "scs" "True"
 config "AGENTSPEED" 18
 
 
-#####################################################################
-#EXP=1_random_walk
-#####################################################################
-#
-## set to to false for experiment 2_random_walk_different_speed
-#config "SPEEDUNIFORM" "True"
-## set to obstacle for experiment 3_random_walk_obstacle_trap else set to greeter
-#config ARGOSNAME "greeter" #greeter|obstacle|foraging
-## set the cotroller to main_foraging.py for experiment 4_foragingelse set to main
-#config "CTRL" "main.py" #main|main_foraging.py
-#
-##########
-## R-POA #
-##########
-#config "CONSENSUS" "ProofOfConnection"
-#loopconfig "scs" "update" "\"no_update\""
-#loopconfig "scs" "decay" 50
-#
-## run experiment with increasing range of robots
-#for UTIL in $(seq 5 5 25); do 
-#	#name of the configuration
-#	CFG="R-PoA_${UTIL}"
-#	# set number of robots
-#	config "NUMROBOTS" "${UTIL}"
-#	# run experiment
-#	wait
-#	run "${EXP}/${CFG}" $@
-#done
-#
-###################
-### POA,PoW & PoC #
-###################
-#loopconfig "scs" "update" "\"peer_index\""
-#for consensus in "ProofOfAuthority" "ProofOfWork" "ProofOfConnection"; do
-#  	config "CONSENSUS" "$consensus"
-#
-#	# run experiment with increasing range of robots
-#	for UTIL in $(seq 5 5 25); do 
-#		#name of the configuration using switch case for consensus name
-#		case "$consensus" in
-#			"ProofOfAuthority") CFG="PoA_${UTIL}" ;;
-#			"ProofOfWork") CFG="PoW_${UTIL}" ;;
-#			"ProofOfConnection") CFG="C-PoA_${UTIL}" ;;
-#			*) CFG="${consensus}_${UTIL}" ;;
-#		esac
-#		# set number of robots
-#		config "NUMROBOTS" "${UTIL}"
-#		# run experiment
-#		wait
-#		run "${EXP}/${CFG}" $@
-#	done
-#
-#done
+####################################################################
+EXP=1_random_walk
+####################################################################
 
-#####################################################################
-#EXP=2_random_walk_different_speed
-#####################################################################
-#
-## Explorer
-#config "EXPLORER" "False"
-#
-## set to to false for experiment 2_random_walk_different_speed
-#config "SPEEDUNIFORM" "False"
-## set to obstacle for experiment 3_random_walk_obstacle_trap else set to greeter
-#config ARGOSNAME "greeter" #greeter|obstacle|foraging
-## set the cotroller to main_foraging.py for experiment 4_foragingelse set to main
-#config "CTRL" "main.py" #main|main_foraging.py
-#
-##########
-## R-POA #
-##########
-#config "CONSENSUS" "ProofOfConnection"
-#loopconfig "scs" "update" "\"no_update\""
-#loopconfig "scs" "decay" 50
-#
-## run experiment with increasing range of robots
-#for UTIL in $(seq 5 5 25); do 
-#	#name of the configuration
-#	CFG="R-PoA_${UTIL}"
-#	# set number of robots
-#	config "NUMROBOTS" "${UTIL}"
-#	# run experiment
-#	wait
-#	run "${EXP}/${CFG}" $@
-#done
-#
-###################
-### POA,PoW & PoC #
-###################
-#loopconfig "scs" "update" "\"peer_index\""
-#for consensus in "ProofOfAuthority" "ProofOfWork" "ProofOfConnection"; do
-#  	config "CONSENSUS" "$consensus"
-#
-#	# run experiment with increasing range of robots
-#	for UTIL in $(seq 5 5 25); do 
-#		#name of the configuration using switch case for consensus name
-#		case "$consensus" in
-#			"ProofOfAuthority") CFG="PoA_${UTIL}" ;;
-#			"ProofOfWork") CFG="PoW_${UTIL}" ;;
-#			"ProofOfConnection") CFG="C-PoA_${UTIL}" ;;
-#			*) CFG="${consensus}_${UTIL}" ;;
-#		esac
-#		# set number of robots
-#		config "NUMROBOTS" "${UTIL}"
-#		# run experiment
-#		wait
-#		run "${EXP}/${CFG}" $@
-#	done
-#
-#done
+# set to to false for experiment 2_random_walk_different_speed
+config "SPEEDUNIFORM" "True"
+# set to obstacle for experiment 3_random_walk_obstacle_trap else set to greeter
+config ARGOSNAME "greeter" #greeter|obstacle|foraging
+# set the cotroller to main_foraging.py for experiment 4_foragingelse set to main
+config "CTRL" "main.py" #main|main_foraging.py
 
-#####################################################################
-#EXP=3_random_walk_obstacle_trap
-#####################################################################
-#
-## set to to false for experiment 2_random_walk_different_speed
-#config "SPEEDUNIFORM" "True"
-## set to obstacle for experiment 3_random_walk_obstacle_trap else set to greeter
-#config ARGOSNAME "obstacle" #greeter|obstacle|foraging
-## set the cotroller to main_foraging.py for experiment 4_foragingelse set to main
-#config "CTRL" "main.py" #main|main_foraging.py
-#
-##########
-## R-POA #
-##########
-#config "CONSENSUS" "ProofOfConnection"
-#loopconfig "scs" "update" "\"no_update\""
-#loopconfig "scs" "decay" 50
-#
-## run experiment with increasing range of robots
-#for UTIL in $(seq 5 5 25); do 
-#	#name of the configuration
-#	CFG="R-PoA_${UTIL}"
-#	# set number of robots
-#	config "NUMROBOTS" "${UTIL}"
-#	# run experiment
-#	wait
-#	run "${EXP}/${CFG}" $@
-#done
-#
-###################
-### POA,PoW & PoC #
-###################
-#loopconfig "scs" "update" "\"peer_index\""
-#for consensus in "ProofOfAuthority" "ProofOfWork" "ProofOfConnection"; do
-#  	config "CONSENSUS" "$consensus"
-#
-#	# run experiment with increasing range of robots
-#	for UTIL in $(seq 5 5 25); do 
-#		#name of the configuration using switch case for consensus name
-#		case "$consensus" in
-#			"ProofOfAuthority") CFG="PoA_${UTIL}" ;;
-#			"ProofOfWork") CFG="PoW_${UTIL}" ;;
-#			"ProofOfConnection") CFG="C-PoA_${UTIL}" ;;
-#			*) CFG="${consensus}_${UTIL}" ;;
-#		esac
-#		# set number of robots
-#		config "NUMROBOTS" "${UTIL}"
-#		# run experiment
-#		wait
-#		run "${EXP}/${CFG}" $@
-#	done
-#
-#done
+#########
+# R-POA #
+#########
+config "CONSENSUS" "ProofOfConnection"
+loopconfig "scs" "update" "\"no_update\""
+loopconfig "scs" "decay" 50
+
+# run experiment with increasing range of robots
+for UTIL in $(seq 5 5 25); do 
+	#name of the configuration
+	CFG="R-PoA_${UTIL}"
+	# set number of robots
+	config "NUMROBOTS" "${UTIL}"
+	# run experiment
+	wait
+	run "${EXP}/${CFG}" $@
+done
+
+##################
+## POA,PoW & PoC #
+##################
+loopconfig "scs" "update" "\"peer_index\""
+for consensus in "ProofOfAuthority" "ProofOfWork" "ProofOfConnection"; do
+  	config "CONSENSUS" "$consensus"
+
+	# run experiment with increasing range of robots
+	for UTIL in $(seq 5 5 25); do 
+		#name of the configuration using switch case for consensus name
+		case "$consensus" in
+			"ProofOfAuthority") CFG="PoA_${UTIL}" ;;
+			"ProofOfWork") CFG="PoW_${UTIL}" ;;
+			"ProofOfConnection") CFG="C-PoA_${UTIL}" ;;
+			*) CFG="${consensus}_${UTIL}" ;;
+		esac
+		# set number of robots
+		config "NUMROBOTS" "${UTIL}"
+		# run experiment
+		wait
+		run "${EXP}/${CFG}" $@
+	done
+
+done
+
+####################################################################
+EXP=2_random_walk_different_speed
+####################################################################
+
+# Explorer
+config "EXPLORER" "False"
+
+# set to to false for experiment 2_random_walk_different_speed
+config "SPEEDUNIFORM" "False"
+# set to obstacle for experiment 3_random_walk_obstacle_trap else set to greeter
+config ARGOSNAME "greeter" #greeter|obstacle|foraging
+# set the cotroller to main_foraging.py for experiment 4_foragingelse set to main
+config "CTRL" "main.py" #main|main_foraging.py
+
+#########
+# R-POA #
+#########
+config "CONSENSUS" "ProofOfConnection"
+loopconfig "scs" "update" "\"no_update\""
+loopconfig "scs" "decay" 50
+
+# run experiment with increasing range of robots
+for UTIL in $(seq 5 5 25); do 
+	#name of the configuration
+	CFG="R-PoA_${UTIL}"
+	# set number of robots
+	config "NUMROBOTS" "${UTIL}"
+	# run experiment
+	wait
+	run "${EXP}/${CFG}" $@
+done
+
+##################
+## POA,PoW & PoC #
+##################
+loopconfig "scs" "update" "\"peer_index\""
+for consensus in "ProofOfAuthority" "ProofOfWork" "ProofOfConnection"; do
+  	config "CONSENSUS" "$consensus"
+
+	# run experiment with increasing range of robots
+	for UTIL in $(seq 5 5 25); do 
+		#name of the configuration using switch case for consensus name
+		case "$consensus" in
+			"ProofOfAuthority") CFG="PoA_${UTIL}" ;;
+			"ProofOfWork") CFG="PoW_${UTIL}" ;;
+			"ProofOfConnection") CFG="C-PoA_${UTIL}" ;;
+			*) CFG="${consensus}_${UTIL}" ;;
+		esac
+		# set number of robots
+		config "NUMROBOTS" "${UTIL}"
+		# run experiment
+		wait
+		run "${EXP}/${CFG}" $@
+	done
+
+done
+
+####################################################################
+EXP=3_random_walk_obstacle_trap
+####################################################################
+
+# set to to false for experiment 2_random_walk_different_speed
+config "SPEEDUNIFORM" "True"
+# set to obstacle for experiment 3_random_walk_obstacle_trap else set to greeter
+config ARGOSNAME "obstacle" #greeter|obstacle|foraging
+# set the cotroller to main_foraging.py for experiment 4_foragingelse set to main
+config "CTRL" "main.py" #main|main_foraging.py
+
+#########
+# R-POA #
+#########
+config "CONSENSUS" "ProofOfConnection"
+loopconfig "scs" "update" "\"no_update\""
+loopconfig "scs" "decay" 50
+
+# run experiment with increasing range of robots
+for UTIL in $(seq 5 5 25); do 
+	#name of the configuration
+	CFG="R-PoA_${UTIL}"
+	# set number of robots
+	config "NUMROBOTS" "${UTIL}"
+	# run experiment
+	wait
+	run "${EXP}/${CFG}" $@
+done
+
+##################
+## POA,PoW & PoC #
+##################
+loopconfig "scs" "update" "\"peer_index\""
+for consensus in "ProofOfAuthority" "ProofOfWork" "ProofOfConnection"; do
+  	config "CONSENSUS" "$consensus"
+
+	# run experiment with increasing range of robots
+	for UTIL in $(seq 5 5 25); do 
+		#name of the configuration using switch case for consensus name
+		case "$consensus" in
+			"ProofOfAuthority") CFG="PoA_${UTIL}" ;;
+			"ProofOfWork") CFG="PoW_${UTIL}" ;;
+			"ProofOfConnection") CFG="C-PoA_${UTIL}" ;;
+			*) CFG="${consensus}_${UTIL}" ;;
+		esac
+		# set number of robots
+		config "NUMROBOTS" "${UTIL}"
+		# run experiment
+		wait
+		run "${EXP}/${CFG}" $@
+	done
+
+done
 
 
 ####################################################################

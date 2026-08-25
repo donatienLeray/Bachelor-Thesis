@@ -22,6 +22,7 @@ import matplotlib.pyplot as plt
 from matplotlib import ticker
 from matplotlib.lines import Line2D
 from matplotlib.colors import to_rgb
+from matplotlib.patches import Patch, Rectangle
 
 SAVED_DIR = Path("/home/dodo/experiment_picker_saves")
 PLOT_DIR = Path('plots')
@@ -33,7 +34,7 @@ SHOW_OUTLIERS = False
 SHOW_DATA_POINTS = False
 # When True, data from different experiments is kept separate even if it shares the
 # same consensus name. Charts then use prefixed labels such as "1#C-PoA".
-SEPARATE_EXPERIMENT_DATA = True
+SEPARATE_EXPERIMENT_DATA = False
 
 
 def configure_plot_saving(enabled=True, plot_dir='plots', dpi=300):
@@ -709,6 +710,30 @@ def _prefix_experiment_key(exp_key: str, experiment_index: int) -> str:
         return f"{base}/{experiment_index}#{suffix}"
 
     return f"{experiment_index}#{exp_key}"
+
+
+def _strip_experiment_key_prefix(key: str) -> str:
+    """Inverse of `_prefix_experiment_key`: remove a leading '<index>#' prefix
+    (either on the whole key, or on the suffix after the last '/') so that
+    keys saved under one experiment-index prefix can be re-prefixed under
+    another when re-used across loads."""
+    if '/' in key:
+        base, suffix = key.rsplit('/', 1)
+        return f"{base}/{re.sub(r'^\d+#', '', suffix)}"
+    return re.sub(r'^\d+#', '', key)
+
+
+def _list_full_experiment_paths(data_dir: Path, exp_key: str) -> List[Path]:
+    """List the directories that make up the *entire* experiment `exp_key`
+    under `data_dir`: its config subfolders if it has any (i.e. directories
+    containing a '001' run folder), otherwise the experiment directory itself."""
+    exp_root = data_dir / exp_key
+    if not exp_root.exists():
+        return []
+    cfgs = [p for p in sorted(exp_root.iterdir()) if p.is_dir() and (p / "001").exists()]
+    if cfgs:
+        return cfgs
+    return [exp_root]
 
 
 def _experiment_legend_label(exp_key: str) -> str:
@@ -1423,11 +1448,54 @@ def create_csv_picker_for_loaded_paths(picker, data_dir=None):
             experiment_labels = {}
             experiment_variant_prefixing = bool(SEPARATE_EXPERIMENT_DATA and len(exp_items) > 1)
             globals()['EXPERIMENT_VARIANT_PREFIXING'] = experiment_variant_prefixing
+            cache_used_exps: List[str] = []
 
             for exp_index, (exp_key, base_paths_dict, probe_dirs) in enumerate(exp_items, start=1):
                 sel = 'block'
                 selected_csv_map[exp_key] = sel
                 top_level_name = _top_level_experiment_name(exp_key)
+
+                # If the entire experiment (all its configs, or its single run
+                # folder) was selected, and a saved bundle already covers it,
+                # reuse the saved bundle instead of re-parsing every CSV.
+                full_exp_paths = set(_list_full_experiment_paths(data_dir, exp_key))
+                is_full_experiment = bool(full_exp_paths) and set(base_paths_dict.values()) == full_exp_paths
+
+                cached_bundle = None
+                if is_full_experiment:
+                    candidate_bundle = _load_experiment_bundle(exp_key)
+                    if candidate_bundle:
+                        expected_base_keys = {
+                            exp_key if p == (data_dir / exp_key) else f"{exp_key}/{p.name}"
+                            for p in full_exp_paths
+                        }
+                        covered_base_keys = {
+                            _strip_experiment_key_prefix(k) for k in candidate_bundle.get('loaded_data', {}).keys()
+                        }
+                        if expected_base_keys and expected_base_keys.issubset(covered_base_keys):
+                            cached_bundle = candidate_bundle
+
+                if cached_bundle is not None:
+                    cache_used_exps.append(exp_key)
+                    for section_name, target in (
+                        ('loaded_data', loaded),
+                        ('block_production_counts', block_production_counts),
+                        ('block_produced_hash', block_produced_hash),
+                        ('loaded_blocks', loaded_blocks),
+                        ('robot_speeds', robot_speeds),
+                        ('loaded_zones', loaded_zones),
+                    ):
+                        for bundle_key, run_dict in cached_bundle.get(section_name, {}).items():
+                            store_key = _prefix_experiment_key(_strip_experiment_key_prefix(bundle_key), exp_index)
+                            target.setdefault(store_key, {}).update(run_dict)
+                            if experiment_variant_prefixing:
+                                experiment_labels[store_key] = f"{exp_index}# {top_level_name}"
+                            else:
+                                experiment_labels[store_key] = top_level_name
+                    saved_sel = cached_bundle.get('selected_csv_map', {}).get(exp_key)
+                    if saved_sel:
+                        selected_csv_map[exp_key] = saved_sel
+                    continue
 
                 # Collect runs across all base paths belonging to this experiment. Each base_path
                 # may be either the experiment root (key==exp_key) or a specific config (key=="exp/cfg").
@@ -1537,6 +1605,8 @@ def create_csv_picker_for_loaded_paths(picker, data_dir=None):
                     print(f"  - {total_observed_blocks:,} observed block hashes")
                     print(f"  - {total_speeds:,} robot speeds")
                     print(f"  - {total_zone_logs:,} trap-zone logs")
+                    if cache_used_exps:
+                        print(f"  - used cached data (from {SAVED_DIR}) for: {', '.join(cache_used_exps)}")
                     save_btn.layout.display = 'block'
                 else:
                     print("❌ Error: No data was loaded. Please check your experiment selection and try again.")
@@ -1949,6 +2019,7 @@ def show_reception_bins(xlabel=None, ylabel='Cumulative Percentage', title=None,
                     dpi=dpi,
                 )
                 plt.show()
+                plt.close(fig)
 
         btn.on_click(_on_button_click)
         display(widgets.VBox([widgets.HBox([grouped_mode.agents_drop, btn]), preview_out]))
@@ -2009,7 +2080,7 @@ def show_reception_bins(xlabel=None, ylabel='Cumulative Percentage', title=None,
                 unit_suffix='s',
             )
             ax.set_title(title if title is not None else f'Block Reception Distribution - {exp}', fontsize=12)
-            
+
             plt.tight_layout()
             _save_plot_if_needed(
                 fig,
@@ -2019,6 +2090,7 @@ def show_reception_bins(xlabel=None, ylabel='Cumulative Percentage', title=None,
                 dpi=dpi,
             )
             plt.show()
+            plt.close(fig)
     
     create_data_picker_with_callback('Show Reception Bins', _reception_bins_callback, 'primary')
 
@@ -2110,7 +2182,42 @@ def show_reception_mean_overview(title=None, xlabel='Number of Agents', ylabel='
     )
 
 
-def show_block_propagation_delay(threshold=0.8, title=None, xlabel='Number of Agents', ylabel='Propagation Delay [s]', save_path=None, dpi=None):
+def _compute_block_propagation_delay_rows(threshold=0.8):
+    """Per-block Block Propagation Delay (BPD) rows across all runs.
+
+    Delegates the per-run computation to `_compute_run_block_propagation_delays`
+    (defined below), which is also used by `show_liveness_scatter`.
+    """
+    if 'loaded_blocks' not in globals() or not globals().get('loaded_blocks'):
+        return []
+
+    loaded_blocks = globals().get('loaded_blocks', {})
+    loaded_data = globals().get('loaded_data', {})
+    exp_choices = sorted(loaded_blocks.keys())
+
+    rows = []
+    for exp_key in exp_choices:
+        consensus, num_agents = _extract_config_info(exp_key)
+        if consensus is None or num_agents is None:
+            print(f"Skipping {exp_key}: doesn't match consensus_number pattern")
+            continue
+
+        for rep_name, blocks_dict in loaded_blocks.get(exp_key, {}).items():
+            robots_dict = loaded_data.get(exp_key, {}).get(rep_name, {})
+            delays = _compute_run_block_propagation_delays(blocks_dict, robots_dict, num_agents, threshold=threshold)
+            for delay in delays:
+                rows.append({
+                    'consensus': consensus,
+                    'num_agents': num_agents,
+                    'rep': rep_name,
+                    'exp_key': exp_key,
+                    'block_propagation_delay_sec': delay,
+                })
+
+    return rows
+
+
+def show_block_propagation_delay(threshold=0.8, title=None, xlabel='Number of Agents', ylabel='BPD [s]', save_path=None, dpi=None):
     """Compute and plot block propagation delay: time from creation until >= threshold fraction of agents observed the block.
 
     Args:
@@ -2120,109 +2227,7 @@ def show_block_propagation_delay(threshold=0.8, title=None, xlabel='Number of Ag
         print("No `loaded_blocks` available. Use the picker and click Load data first.")
         return
 
-    loaded_blocks = globals().get('loaded_blocks', {})
-    loaded_data = globals().get('loaded_data', {})
-    exp_choices = sorted(loaded_blocks.keys())
-
-    rows = []
-
-    for exp_key in exp_choices:
-        consensus, num_agents = _extract_config_info(exp_key)
-        if consensus is None or num_agents is None:
-            print(f"Skipping {exp_key}: doesn't match consensus_number pattern")
-            continue
-
-        for rep_name, blocks_dict in loaded_blocks.get(exp_key, {}).items():
-            if not isinstance(blocks_dict, dict) or not blocks_dict:
-                continue
-
-            # build creation time map for blocks in this run from loaded_data robot CSVs
-            creation_map = {}
-            run_data = loaded_data.get(exp_key, {}).get(rep_name, {})
-            chain_frames = [df for df in run_data.values() if isinstance(df, pd.DataFrame) and not df.empty]
-            if chain_frames:
-                combined_chain = pd.concat(chain_frames, ignore_index=True)
-                if 'HASH' in combined_chain.columns and 'TIMESTAMP' in combined_chain.columns:
-                    combined_chain = combined_chain.dropna(subset=['HASH', 'TIMESTAMP']).copy()
-                    combined_chain['HASH'] = combined_chain['HASH'].astype(str)
-                    combined_chain['_ts'] = pd.to_numeric(combined_chain['TIMESTAMP'], errors='coerce')
-                    grp = combined_chain.groupby('HASH', sort=False)['_ts'].min()
-                    creation_map = grp.to_dict()
-
-            for block_hash, block_df in blocks_dict.items():
-                if not isinstance(block_df, pd.DataFrame) or block_df.empty:
-                    continue
-
-                # observer id column
-                if 'observer_id' in block_df.columns:
-                    obs_col = 'observer_id'
-                elif 'observer' in block_df.columns:
-                    obs_col = 'observer'
-                else:
-                    continue
-
-                # find a timestamp column in observations
-                ts_candidates = ['received_at', 'received', 'timestamp', 'observed_at', 'observed', 'time']
-                ts_col = None
-                for c in ts_candidates:
-                    if c in block_df.columns:
-                        ts_col = c
-                        break
-                if ts_col is None:
-                    # fallback: try numeric index or skip
-                    continue
-
-                df = block_df.copy()
-                df[obs_col] = df[obs_col].astype(str)
-                df['_obs_ts'] = pd.to_numeric(df[ts_col], errors='coerce')
-                df = df.dropna(subset=['_obs_ts'])
-                if df.empty:
-                    continue
-
-                unique_observers = list(pd.unique(df[obs_col].astype(str)))
-                if not unique_observers:
-                    continue
-
-                required = int(math.ceil(threshold * num_agents))
-                if len(unique_observers) < required:
-                    # not enough observers reached threshold
-                    continue
-
-                # sort by observation time and find first time when >= required unique observers have seen it
-                df_sorted = df.sort_values('_obs_ts')
-                seen = set()
-                t80 = None
-                for _, row in df_sorted.iterrows():
-                    seen.add(str(row[obs_col]))
-                    if len(seen) >= required:
-                        t80 = float(row['_obs_ts'])
-                        break
-                if t80 is None:
-                    continue
-
-                # creation time
-                creation_ts = creation_map.get(str(block_hash))
-                if creation_ts is None or pd.isna(creation_ts):
-                    # try to infer from any TIMESTAMP in block_df
-                    if 'TIMESTAMP' in block_df.columns:
-                        creation_ts = pd.to_numeric(block_df['TIMESTAMP'].dropna().min(), errors='coerce')
-                if creation_ts is None or pd.isna(creation_ts):
-                    continue
-
-                delay = float(t80) - float(creation_ts)
-                if delay < 0:
-                    # skip negative delays
-                    continue
-
-                rows.append({
-                    'consensus': consensus,
-                    'num_agents': num_agents,
-                    'rep': rep_name,
-                    'exp_key': exp_key,
-                    'block_propagation_delay_sec': delay,
-                    'block_hash': str(block_hash),
-                })
-
+    rows = _compute_block_propagation_delay_rows(threshold=threshold)
     plot_df = pd.DataFrame(rows)
 
     _create_consensus_boxplot_visualization(
@@ -2231,7 +2236,7 @@ def show_block_propagation_delay(threshold=0.8, title=None, xlabel='Number of Ag
         ylabel=ylabel,
         plot_title=title if title is not None else 'Block Propagation Delay (80% Observers)',
         comparison_title='Block Propagation Delay Comparison Across Consensus Algorithms',
-        ylim=None,
+        ylim=(0, 1500),
         no_data_message='No block propagation delay data found. Ensure observations and timestamps are present.',
         save_path=save_path,
         dpi=dpi,
@@ -2239,9 +2244,263 @@ def show_block_propagation_delay(threshold=0.8, title=None, xlabel='Number of Ag
     )
 
 
-def show_production_delay_bins(xlabel=None, ylabel='Cumulative Percentage', title=None, save_path=None, dpi=None):
-    """Show cumulative block production delay distribution with separated bins.
-    
+def show_block_propagation_delay_combined(threshold=0.8, title=None, ylabel='BPD [s]', save_path=None, dpi=None, consensus_order=None):
+    """Combined single-panel version of `show_block_propagation_delay`: all
+    consensus protocols shown as grouped boxplots at each agent count."""
+    if 'loaded_blocks' not in globals() or not globals().get('loaded_blocks'):
+        print("No `loaded_blocks` available. Use the picker and click Load data first.")
+        return
+
+    rows = _compute_block_propagation_delay_rows(threshold=threshold)
+    plot_df = pd.DataFrame(rows)
+
+    _create_combined_consensus_boxplot(
+        plot_df=plot_df,
+        metric_column='block_propagation_delay_sec',
+        ylabel=ylabel,
+        plot_title=None,
+        ylim=(0, 1500),
+        no_data_message='No block propagation delay data found. Ensure observations and timestamps are present.',
+        save_path=save_path,
+        dpi=dpi,
+        plot_name='block_propagation_delay_80pct_combined',
+        consensus_order=consensus_order or ['C-PoA', 'R-PoA', 'PoA', 'PoW'],
+    )
+
+
+def _compute_run_block_propagation_delays(blocks_dict, robots_dict, num_agents, threshold=0.8):
+    """Per-run helper mirroring the per-block computation in `show_block_propagation_delay`.
+
+    Args:
+        blocks_dict: `loaded_blocks[exp_key][rep_name]`, block_hash -> observations DataFrame.
+        robots_dict: `loaded_data[exp_key][rep_name]`, robot_id -> chain DataFrame.
+        num_agents: swarm size for this run, used to derive the observer threshold.
+        threshold: fraction of agents that must have observed a block.
+
+    Returns:
+        List of per-block propagation delays (raw TIMESTAMP units) for this run.
+    """
+    if not isinstance(blocks_dict, dict) or not blocks_dict:
+        return []
+
+    creation_map = {}
+    chain_frames = [df for df in robots_dict.values() if isinstance(df, pd.DataFrame) and not df.empty]
+    if chain_frames:
+        combined_chain = pd.concat(chain_frames, ignore_index=True)
+        if 'HASH' in combined_chain.columns and 'TIMESTAMP' in combined_chain.columns:
+            combined_chain = combined_chain.dropna(subset=['HASH', 'TIMESTAMP']).copy()
+            combined_chain['HASH'] = combined_chain['HASH'].astype(str)
+            combined_chain['_ts'] = pd.to_numeric(combined_chain['TIMESTAMP'], errors='coerce')
+            creation_map = combined_chain.groupby('HASH', sort=False)['_ts'].min().to_dict()
+
+    delays = []
+    for block_hash, block_df in blocks_dict.items():
+        if not isinstance(block_df, pd.DataFrame) or block_df.empty:
+            continue
+
+        if 'observer_id' in block_df.columns:
+            obs_col = 'observer_id'
+        elif 'observer' in block_df.columns:
+            obs_col = 'observer'
+        else:
+            continue
+
+        ts_candidates = ['received_at', 'received', 'timestamp', 'observed_at', 'observed', 'time']
+        ts_col = next((c for c in ts_candidates if c in block_df.columns), None)
+        if ts_col is None:
+            continue
+
+        df = block_df.copy()
+        df[obs_col] = df[obs_col].astype(str)
+        df['_obs_ts'] = pd.to_numeric(df[ts_col], errors='coerce')
+        df = df.dropna(subset=['_obs_ts'])
+        if df.empty:
+            continue
+
+        unique_observers = list(pd.unique(df[obs_col].astype(str)))
+        if not unique_observers:
+            continue
+
+        required = int(math.ceil(threshold * num_agents))
+        if len(unique_observers) < required:
+            continue
+
+        df_sorted = df.sort_values('_obs_ts')
+        seen = set()
+        t_reach = None
+        for _, row in df_sorted.iterrows():
+            seen.add(str(row[obs_col]))
+            if len(seen) >= required:
+                t_reach = float(row['_obs_ts'])
+                break
+        if t_reach is None:
+            continue
+
+        creation_ts = creation_map.get(str(block_hash))
+        if creation_ts is None or pd.isna(creation_ts):
+            if 'TIMESTAMP' in block_df.columns:
+                creation_ts = pd.to_numeric(block_df['TIMESTAMP'].dropna().min(), errors='coerce')
+        if creation_ts is None or pd.isna(creation_ts):
+            continue
+
+        delay = float(t_reach) - float(creation_ts)
+        if delay < 0:
+            continue
+
+        delays.append(delay)
+
+    return delays
+
+
+def show_liveness_scatter(threshold=0.8, save_path=None, dpi=None, consensus_order=None):
+    """Liveness plot combining Block Interval (BI) and Block Propagation Delay (BPD)
+    on one pair of axes, one point per (consensus, swarm size).
+
+    For every consensus protocol, one point per swarm size is plotted at
+    (median BI, median BPD) across that size's runs, labeled with the agent
+    count and connected by a line in increasing agent-count order. A
+    translucent rectangle behind each point spans the interquartile range
+    (Q1-Q3) of BI and BPD for that swarm size, mirroring the box part of a
+    boxplot.
+    """
+    if 'loaded_data' not in globals() or not globals().get('loaded_data'):
+        print("No `loaded_data` available. Use the picker and click Load data first.")
+        return
+    if 'loaded_blocks' not in globals() or not globals().get('loaded_blocks'):
+        print("No `loaded_blocks` available. Use the picker and click Load data first.")
+        return
+
+    loaded_data = globals().get('loaded_data', {})
+    loaded_blocks = globals().get('loaded_blocks', {})
+    exp_choices = sorted(set(loaded_data.keys()) & set(loaded_blocks.keys()))
+
+    rows = []
+    for exp_key in exp_choices:
+        consensus, num_agents = _extract_config_info(exp_key)
+        if consensus is None or num_agents is None:
+            continue
+
+        for rep_name, robots_dict in loaded_data.get(exp_key, {}).items():
+            chain_df = get_main_chain(robots_dict)
+            if not isinstance(chain_df, pd.DataFrame):
+                continue
+            if 'TIMESTAMP' not in chain_df.columns or 'HASH' not in chain_df.columns:
+                continue
+
+            unique_blocks = chain_df.groupby('HASH', as_index=False)['TIMESTAMP'].min()
+            timestamps = unique_blocks['TIMESTAMP'].dropna().sort_values().values
+            if len(timestamps) < 3:
+                continue
+            bi_ticks = np.diff(timestamps)[1:]  # skip genesis -> block 1
+            bi_ticks = bi_ticks[bi_ticks >= 0]
+            if len(bi_ticks) == 0:
+                continue
+            bi_sec = float(np.median(bi_ticks) / 10.0)
+
+            blocks_dict = loaded_blocks.get(exp_key, {}).get(rep_name, {})
+            bpd_values = _compute_run_block_propagation_delays(blocks_dict, robots_dict, num_agents, threshold=threshold)
+            if not bpd_values:
+                continue
+            bpd_sec = float(np.median(bpd_values))
+
+            rows.append({
+                'consensus': consensus,
+                'num_agents': num_agents,
+                'rep': rep_name,
+                'bi_sec': bi_sec,
+                'bpd_sec': bpd_sec,
+            })
+
+    if not rows:
+        print("No valid BI/BPD data found for the liveness plot.")
+        return
+
+    run_df = pd.DataFrame(rows)
+
+    if not bool(globals().get('SEPARATE_EXPERIMENT_DATA', True)):
+        run_df = run_df.copy()
+        run_df['consensus'] = run_df['consensus'].astype(str).str.replace(r'^\d+#\s*', '', regex=True)
+
+    consensus_types = sorted(run_df['consensus'].unique())
+    color_map, _, _, ordered_variants = _build_consensus_style(
+        consensus_types, base_order=consensus_order or ['C-PoA', 'R-PoA', 'PoA', 'PoW']
+    )
+
+    # Dark line/marker/label color per base consensus, used only for the line, dots,
+    # and agent-count labels; the translucent IQR-box area keeps the original color_map shade.
+    line_color_overrides = {'PoW': '#0b5e0b'}
+
+    fig, ax = plt.subplots(figsize=(9, 7))
+
+    for variant in ordered_variants:
+        sub = run_df[run_df['consensus'] == variant]
+        if sub.empty:
+            continue
+        color = color_map[variant]
+        line_color = line_color_overrides.get(_base_consensus_name(variant), color)
+
+        agent_counts = sorted(sub['num_agents'].unique())
+        med_bi, med_bpd = [], []
+        for n_agents in agent_counts:
+            grp = sub[sub['num_agents'] == n_agents]
+            bi_vals = grp['bi_sec'].values
+            bpd_vals = grp['bpd_sec'].values
+
+            bi_med = float(np.median(bi_vals))
+            bpd_med = float(np.median(bpd_vals))
+            bi_q1, bi_q3 = np.percentile(bi_vals, [25, 75])
+            bpd_q1, bpd_q3 = np.percentile(bpd_vals, [25, 75])
+
+            med_bi.append(bi_med)
+            med_bpd.append(bpd_med)
+
+            rect = Rectangle(
+                (bi_q1, bpd_q1),
+                max(bi_q3 - bi_q1, 1e-9),
+                max(bpd_q3 - bpd_q1, 1e-9),
+                facecolor=color,
+                alpha=0.18,
+                edgecolor=color,
+                linewidth=0.6,
+                zorder=1,
+            )
+            ax.add_patch(rect)
+
+        ax.plot(
+            med_bi, med_bpd,
+            color=line_color, marker='o', markersize=7, linewidth=2,
+            markeredgecolor='black', markeredgewidth=1.2,
+            label=variant, zorder=3,
+        )
+
+        for x, y, n_agents in zip(med_bi, med_bpd, agent_counts):
+            ax.annotate(
+                str(n_agents), (x, y),
+                textcoords="offset points", xytext=(6, 6),
+                fontsize=9, color=line_color, fontweight='bold', zorder=4,
+            )
+
+    ax.set_xlabel('BI [s]', fontsize=12, fontweight='bold')
+    ax.set_ylabel('BPD [s]', fontsize=12, fontweight='bold')
+    ax.set_title('Liveness overview', fontsize=13, fontweight='bold')
+    ax.grid(True, linestyle='--', alpha=0.3)
+    ax.set_xlim(left=0)
+    ax.set_ylim(bottom=0)
+    ax.legend(loc='best', fontsize=10, title='Consensus')
+
+    plt.tight_layout()
+    _save_plot_if_needed(fig, plot_name='liveness_bi_vs_bpd', exp_key=None, save_path=save_path, dpi=dpi)
+    plt.show()
+    plt.close(fig)
+
+    print("\nMedian (BI [s], BPD [s]) per consensus and agent count:")
+    summary = run_df.groupby(['consensus', 'num_agents'])[['bi_sec', 'bpd_sec']].median()
+    print(summary.to_string())
+
+
+def show_block_interval_bins(xlabel=None, ylabel='Cumulative Percentage', title=None, save_path=None, dpi=None):
+    """Show cumulative Block Interval (BI) distribution with separated bins.
+
     Each bin represents the same width as the reception bins and is displayed as a bar.
     Bars are separated by dashed lines. X-axis shows time in seconds, Y-axis shows cumulative %.
     """
@@ -2279,7 +2538,7 @@ def show_production_delay_bins(xlabel=None, ylabel='Cumulative Percentage', titl
 
     if grouped_mode.split_config_mode or grouped_mode.multi_experiment_group_mode:
         preview_out = widgets.Output()
-        btn = widgets.Button(description='Show Production Delay Bins', button_style='primary')
+        btn = widgets.Button(description='Show Block Interval Bins', button_style='primary')
 
         def _on_button_click(_):
             with preview_out:
@@ -2303,7 +2562,7 @@ def show_production_delay_bins(xlabel=None, ylabel='Cumulative Percentage', titl
                         delays_by_consensus[consensus] = consensus_delays
 
                 if not delays_by_consensus:
-                    print("No valid production delay data found for the selected agent count.")
+                    print("No valid Block Interval data found for the selected agent count.")
                     return
 
                 bin_width = 10
@@ -2331,7 +2590,7 @@ def show_production_delay_bins(xlabel=None, ylabel='Cumulative Percentage', titl
                         bin_centers=bin_centers,
                         bin_width_sec=bin_width_sec,
                         color='purple',
-                        xlabel=xlabel if xlabel is not None else 'Block Production Delay [s]',
+                        xlabel=xlabel if xlabel is not None else 'Block Interval [s]',
                         ylabel=ylabel,
                         xlim=(0, max_x),
                         sample_label=f'n={len(data_to_plot):,} delays',
@@ -2351,23 +2610,24 @@ def show_production_delay_bins(xlabel=None, ylabel='Cumulative Percentage', titl
                 for idx in range(n_consensus, nrows * ncols):
                     axes[idx // ncols][idx % ncols].set_visible(False)
 
-                fig.suptitle(title if title is not None else f'Block Production Delay Distribution (Agents: {grouped_mode.agents_drop.value})', fontsize=13)
+                fig.suptitle(title if title is not None else f'Block Interval Distribution (Agents: {grouped_mode.agents_drop.value})', fontsize=13)
                 _add_experiment_legend(fig, legend_exp_keys)
                 plt.tight_layout()
                 _save_plot_if_needed(
                     fig,
-                    plot_name=f'production_delay_bins_agents_{grouped_mode.agents_drop.value}',
+                    plot_name=f'block_interval_bins_agents_{grouped_mode.agents_drop.value}',
                     exp_key=None,
                     save_path=save_path,
                     dpi=dpi,
                 )
                 plt.show()
+                plt.close(fig)
 
         btn.on_click(_on_button_click)
         display(widgets.VBox([widgets.HBox([grouped_mode.agents_drop, btn]), preview_out]))
         return
 
-    def _production_delay_bins_callback(exp, rep_sel, robot_sel, loaded_data, preview_out):
+    def _block_interval_bins_callback(exp, rep_sel, robot_sel, loaded_data, preview_out):
         with preview_out:
             preview_out.clear_output()
             delays = _compute_delays(exp, rep_sel=rep_sel, robot_sel=robot_sel)
@@ -2380,7 +2640,7 @@ def show_production_delay_bins(xlabel=None, ylabel='Cumulative Percentage', titl
             data_to_plot = data_to_plot[data_to_plot >= 0].values
 
             if len(data_to_plot) == 0:
-                print(f'No valid production delay data found for {exp}')
+                print(f'No valid Block Interval data found for {exp}')
                 return
 
             # Create figure
@@ -2404,7 +2664,7 @@ def show_production_delay_bins(xlabel=None, ylabel='Cumulative Percentage', titl
                 bin_centers=bin_centers,
                 bin_width_sec=bin_width_sec,
                 color='purple',
-                xlabel=xlabel if xlabel is not None else 'Block Production Delay [s]',
+                xlabel=xlabel if xlabel is not None else 'Block Interval [s]',
                 ylabel=ylabel,
                 xlim=(0, max_x),
                 sample_label=f'n={len(data_to_plot):,} delays',
@@ -2419,27 +2679,24 @@ def show_production_delay_bins(xlabel=None, ylabel='Cumulative Percentage', titl
                 unit_divisor=10.0,
                 unit_suffix='s',
             )
-            ax.set_title(title if title is not None else f'Block Production Delay Distribution - {exp}', fontsize=12)
+            ax.set_title(title if title is not None else f'Block Interval Distribution - {exp}', fontsize=12)
 
             plt.tight_layout()
             _save_plot_if_needed(
                 fig,
-                plot_name=f'production_delay_bins_{exp}',
+                plot_name=f'block_interval_bins_{exp}',
                 exp_key=exp,
                 save_path=save_path,
                 dpi=dpi,
             )
             plt.show()
+            plt.close(fig)
 
-    create_data_picker_with_callback('Show Production Delay Bins', _production_delay_bins_callback, 'primary')
+    create_data_picker_with_callback('Show Block Interval Bins', _block_interval_bins_callback, 'primary')
 
 
-def show_production_delay_mean_overview(title=None, xlabel='Number of Agents', ylabel='Mean BPD [s]', save_path=None, dpi=None):
-    """BPE-style overview of mean BPD per consensus across agent counts."""
-    if 'loaded_data' not in globals() or not globals().get('loaded_data'):
-        print("No `loaded_data` available. Use the picker and click Load data first.")
-        return
-
+def _compute_block_interval_rows():
+    """Per-run Block Interval (BI) rows: mean main-chain block interval, in seconds."""
     loaded_data = globals().get('loaded_data', {})
     exp_choices = sorted(loaded_data.keys())
 
@@ -2481,29 +2738,164 @@ def show_production_delay_mean_overview(title=None, xlabel='Number of Agents', y
                 'num_agents': num_agents,
                 'rep': rep_name,
                 'exp_key': exp_key,
-                'mean_bpd_sec': float(np.mean(delays) / 10.0),
+                'mean_bi_sec': float(np.mean(delays) / 10.0),
                 'n_delays': int(len(delays)),
             })
 
+    return rows
+
+
+def show_block_interval_mean_overview(title=None, xlabel='Number of Agents', ylabel='Mean BI [s]', save_path=None, dpi=None):
+    """Mean Block Interval (BI) per consensus across agent counts."""
+    if 'loaded_data' not in globals() or not globals().get('loaded_data'):
+        print("No `loaded_data` available. Use the picker and click Load data first.")
+        return
+
+    rows = _compute_block_interval_rows()
     if not rows:
-        print("No valid BPD data found for overview plot.")
+        print("No valid BI data found for overview plot.")
         return
 
     plot_df = pd.DataFrame(rows)
-    bpd_ylim = (0.0, 38.0)
+    bi_ylim = (0.0, 38.0)
 
     _create_consensus_boxplot_visualization(
         plot_df=plot_df,
-        metric_column='mean_bpd_sec',
+        metric_column='mean_bi_sec',
         ylabel=ylabel,
-        plot_title=title if title is not None else 'Mean BPD by Consensus Across Agent Counts',
-        comparison_title='Mean BPD Comparison Across Consensus Algorithms',
-        ylim=bpd_ylim,
-        no_data_message='No valid BPD data found for overview plot.',
+        plot_title=title if title is not None else 'Mean BI by Consensus Across Agent Counts',
+        comparison_title='Mean BI Comparison Across Consensus Algorithms',
+        ylim=bi_ylim,
+        no_data_message='No valid BI data found for overview plot.',
         save_path=save_path,
         dpi=dpi,
-        plot_name='mean_bpd_overview',
+        plot_name='mean_bi_overview',
     )
+
+
+def show_block_interval_mean_overview_combined(title=None, ylabel='BI [s]', save_path=None, dpi=None, consensus_order=None):
+    """Combined single-panel version of `show_block_interval_mean_overview`: all
+    consensus protocols shown as grouped boxplots at each agent count."""
+    if 'loaded_data' not in globals() or not globals().get('loaded_data'):
+        print("No `loaded_data` available. Use the picker and click Load data first.")
+        return
+
+    rows = _compute_block_interval_rows()
+    if not rows:
+        print("No valid BI data found for overview plot.")
+        return
+
+    plot_df = pd.DataFrame(rows)
+    bi_ylim = (0.0, 38.0)
+
+    _create_combined_consensus_boxplot(
+        plot_df=plot_df,
+        metric_column='mean_bi_sec',
+        ylabel=ylabel,
+        plot_title=None,
+        ylim=bi_ylim,
+        no_data_message='No valid BI data found for overview plot.',
+        save_path=save_path,
+        dpi=dpi,
+        plot_name='mean_bi_overview_combined',
+        consensus_order=consensus_order or ['C-PoA', 'R-PoA', 'PoA', 'PoW'],
+    )
+
+
+def _split_consensus_variant(consensus_name: str) -> Tuple[Optional[int], str, str]:
+    text = str(consensus_name)
+    m = re.match(r'^\s*(\d+)#\s*(.+)$', text)
+    if not m:
+        return None, text, text
+    idx = int(m.group(1))
+    base = m.group(2).strip()
+    normalized = f"{idx}#{base}"
+    return idx, base, normalized
+
+
+def _base_consensus_name(consensus_name: str) -> str:
+    _, base, _ = _split_consensus_variant(consensus_name)
+    return base
+
+
+def _variant_sort_key(consensus_name: str):
+    idx, base, normalized = _split_consensus_variant(consensus_name)
+    idx_sort = idx if idx is not None else 10**9
+    return (base.lower(), idx_sort, normalized.lower())
+
+
+def _mix_with_white(color, mix_ratio: float):
+    base = np.array(to_rgb(color), dtype=float)
+    white = np.array([1.0, 1.0, 1.0], dtype=float)
+    ratio = float(np.clip(mix_ratio, 0.0, 0.85))
+    mixed = (1.0 - ratio) * base + ratio * white
+    return tuple(mixed)
+
+
+def _build_consensus_style(
+    consensus_types, base_order: Optional[List[str]] = None
+) -> Tuple[Dict[str, tuple], List[str], Dict[str, List[str]], List[str]]:
+    """Build a stable color map and ordering for a set of consensus variant labels.
+
+    Args:
+        base_order: optional explicit ordering for base consensus names (e.g.
+            ['C-PoA', 'R-PoA', 'PoA', 'PoW']). Names not listed are appended
+            alphabetically after the listed ones. Defaults to alphabetical order.
+
+    Returns:
+        color_map: variant label -> RGB color tuple
+        base_names: ordered list of base consensus names (e.g. 'PoA', 'PoW')
+        variants_by_base: base consensus name -> sorted list of its variant labels
+        ordered_variants: all variant labels grouped by base, ordered for consistent
+            display across plots (e.g. '1#PoA', '2#PoA', 'PoW', ...)
+    """
+    present_base_names = {_base_consensus_name(c) for c in consensus_types}
+    if base_order:
+        priority = {name: i for i, name in enumerate(base_order)}
+        base_names = sorted(
+            present_base_names,
+            key=lambda b: (priority.get(b, len(priority)), b),
+        )
+    else:
+        base_names = sorted(present_base_names)
+    fixed_base_colors = {
+        'C-PoA': '#d62728',
+        'C_PoA': '#d62728',
+        'CPoA': '#d62728',
+        'PoA': '#00008b',
+        'R-PoA': '#4ebce0',
+        'R-PoA2': '#ff8c42',
+        'R_PoA2': '#ff8c42',
+        'RPoA2': '#ff8c42',
+        'PoW': '#2ca02c',
+    }
+    fallback_palette = plt.cm.tab20(np.linspace(0, 1, max(1, len(base_names))))
+    base_color_map = {}
+    for i, base in enumerate(base_names):
+        base_color_map[base] = fixed_base_colors.get(base, fallback_palette[i % len(fallback_palette)])
+
+    variants_by_base: Dict[str, List[str]] = {}
+    for consensus in consensus_types:
+        base = _base_consensus_name(consensus)
+        variants_by_base.setdefault(base, []).append(consensus)
+    for base in variants_by_base:
+        variants_by_base[base] = sorted(variants_by_base[base], key=_variant_sort_key)
+
+    color_map = {}
+    ordered_variants: List[str] = []
+    for base in base_names:
+        variants = variants_by_base.get(base, [])
+        n_variants = len(variants)
+        if n_variants <= 1:
+            if variants:
+                color_map[variants[0]] = base_color_map[base]
+        else:
+            shade_steps = np.linspace(0.0, 0.45, n_variants)
+            for variant, shade in zip(variants, shade_steps):
+                color_map[variant] = _mix_with_white(base_color_map[base], shade)
+        ordered_variants.extend(variants)
+
+    return color_map, base_names, variants_by_base, ordered_variants
 
 
 def _create_consensus_boxplot_visualization(
@@ -2527,7 +2919,7 @@ def _create_consensus_boxplot_visualization(
         plot_df: DataFrame with columns 'consensus', 'num_agents', and metric_column
         metric_column: Name of the column containing metric values
         ylabel: Label for y-axis (e.g., 'Propagation Time [s]' or 'Efficiency (%)')
-        plot_title: Overall figure title (e.g., 'Block Propagation Time (BPT)')
+        plot_title: Overall figure title (e.g., 'Block Propagation Delay (BPD)')
         comparison_title: Title for the comparison line chart
         ylim: Optional tuple (min, max) to set y-axis limits on boxplots
         no_data_message: Message to display if no data
@@ -2564,66 +2956,8 @@ def _create_consensus_boxplot_visualization(
     consensus_types = sorted(plot_df['consensus'].unique())
     agent_counts = sorted(plot_df['num_agents'].unique())
 
-    def _split_consensus_variant(consensus_name: str) -> Tuple[Optional[int], str, str]:
-        text = str(consensus_name)
-        m = re.match(r'^\s*(\d+)#\s*(.+)$', text)
-        if not m:
-            return None, text, text
-        idx = int(m.group(1))
-        base = m.group(2).strip()
-        normalized = f"{idx}#{base}"
-        return idx, base, normalized
-
-    def _base_consensus_name(consensus_name: str) -> str:
-        _, base, _ = _split_consensus_variant(consensus_name)
-        return base
-
-    def _variant_sort_key(consensus_name: str):
-        idx, base, normalized = _split_consensus_variant(consensus_name)
-        idx_sort = idx if idx is not None else 10**9
-        return (base.lower(), idx_sort, normalized.lower())
-
-    def _mix_with_white(color, mix_ratio: float):
-        base = np.array(to_rgb(color), dtype=float)
-        white = np.array([1.0, 1.0, 1.0], dtype=float)
-        ratio = float(np.clip(mix_ratio, 0.0, 0.85))
-        mixed = (1.0 - ratio) * base + ratio * white
-        return tuple(mixed)
-
     # Color families by base consensus; experiment variants are shades of that family.
-    base_names = sorted({_base_consensus_name(c) for c in consensus_types})
-    fixed_base_colors = {
-        'C-PoA': '#d62728',
-        'C_PoA': '#d62728',
-        'CPoA': '#d62728',
-        'PoA': '#00008b',
-        'R-PoA': '#4ebce0',
-        'R-PoA2': '#ff8c42',
-        'R_PoA2': '#ff8c42',
-        'RPoA2': '#ff8c42',
-        'PoW': '#2ca02c',
-    }
-    fallback_palette = plt.cm.tab20(np.linspace(0, 1, max(1, len(base_names))))
-    base_color_map = {}
-    for i, base in enumerate(base_names):
-        base_color_map[base] = fixed_base_colors.get(base, fallback_palette[i % len(fallback_palette)])
-
-    variants_by_base: Dict[str, List[str]] = {}
-    for consensus in consensus_types:
-        base = _base_consensus_name(consensus)
-        variants_by_base.setdefault(base, []).append(consensus)
-    for base in variants_by_base:
-        variants_by_base[base] = sorted(variants_by_base[base], key=_variant_sort_key)
-
-    color_map = {}
-    for base, variants in variants_by_base.items():
-        n_variants = len(variants)
-        if n_variants <= 1:
-            color_map[variants[0]] = base_color_map[base]
-            continue
-        shade_steps = np.linspace(0.0, 0.45, n_variants)
-        for variant, shade in zip(variants, shade_steps):
-            color_map[variant] = _mix_with_white(base_color_map[base], shade)
+    color_map, base_names, variants_by_base, _ = _build_consensus_style(consensus_types)
 
     # One boxplot subplot per base consensus family + one comparison line chart.
     n_base = max(1, len(base_names))
@@ -2808,7 +3142,8 @@ def _create_consensus_boxplot_visualization(
         dpi=dpi,
     )
     plt.show()
-    
+    plt.close(fig)
+
     # Print summary statistics
     print(f"\nSummary Statistics ({ylabel}):")
     summary = plot_df.groupby(['consensus', 'num_agents'])[metric_column].agg(['count', 'mean', 'median', 'std', 'min', 'max'])
@@ -2820,83 +3155,160 @@ def _create_consensus_boxplot_visualization(
     display(overall)
 
 
-def show_efficiency_boxplot(save_path=None, dpi=None):
-    """Boxplot of chain efficiency (max height / total produced blocks) by consensus and number of agents.
-    Shows 5 plots: 4 per-consensus boxplots (2x2 grid) + 1 comparison line chart."""
-
-    if 'loaded_data' not in globals() or not globals().get('loaded_data'):
-        print("No `loaded_data` available. Use the picker and click Load data first.")
+def _create_combined_consensus_boxplot(
+    plot_df,
+    metric_column,
+    ylabel,
+    plot_title,
+    ylim=None,
+    no_data_message="No data found.",
+    save_path=None,
+    dpi=None,
+    exp_key=None,
+    plot_name=None,
+    consensus_order: Optional[List[str]] = None,
+):
+    """Single-panel boxplot with one x-position per agent count, holding one box
+    per consensus variant side-by-side (all consensus protocols on one axes)."""
+    if plot_df.empty:
+        print(no_data_message)
         return
 
-    loaded_data = globals().get('loaded_data', {})
-    exp_choices = sorted(loaded_data.keys())
+    if not bool(globals().get('SEPARATE_EXPERIMENT_DATA', True)) and 'consensus' in plot_df.columns:
+        merged_df = plot_df.copy()
+        merged_df['consensus'] = merged_df['consensus'].astype(str).str.replace(r'^\d+#\s*', '', regex=True)
+        plot_df = merged_df
 
-    rows = []  # each row: consensus, num_agents, rep, efficiency_pct
+    if ylim is None:
+        metric_vals = pd.to_numeric(plot_df[metric_column], errors='coerce').dropna().values
+        if len(metric_vals) > 0:
+            ymin = float(np.min(metric_vals))
+            ymax = float(np.max(metric_vals))
+            if np.isclose(ymin, ymax):
+                pad = max(abs(ymax) * 0.05, 1e-6)
+            else:
+                pad = (ymax - ymin) * 0.05
+            ylim_to_use = (ymin - pad, ymax + pad)
+        else:
+            ylim_to_use = None
+    else:
+        ylim_to_use = ylim
 
-    for exp_key in exp_choices:
-        # Extract consensus and agent count using helper function
-        consensus, num_agents = _extract_config_info(exp_key)
-        if consensus is None or num_agents is None:
-            # Not following consensus_numAgents pattern; skip with notice
-            print(f"Skipping {exp_key}: doesn't match consensus_number pattern")
-            continue
+    consensus_types = sorted(plot_df['consensus'].unique())
+    agent_counts = sorted(plot_df['num_agents'].unique())
+    color_map, _, _, ordered_variants = _build_consensus_style(consensus_types, base_order=consensus_order)
 
-        for rep_name, robots_dict in loaded_data.get(exp_key, {}).items():
-            # Get the main chain height based on highest last-block TDIFF
-            max_height = 0
-            total_blocks_produced = 0
-            
-            main_chain_df = get_main_chain(robots_dict)
-            if isinstance(main_chain_df, pd.DataFrame) and 'HEIGHT' in main_chain_df.columns:
-                max_height = main_chain_df['HEIGHT'].max()
-            
-            # Get total blocks produced for this rep (if available)
-            if 'block_production_counts' in globals():
-                block_counts = globals().get('block_production_counts', {})
-                if exp_key in block_counts and rep_name in block_counts[exp_key]:
-                    total_blocks_produced = sum(block_counts[exp_key][rep_name].values())
-            
-            # Calculate efficiency: max_height / total_blocks_produced * 100
-            if max_height > 0 and total_blocks_produced > 0:
-                efficiency_pct = (max_height / total_blocks_produced) * 100.0
-                rows.append({
-                    'consensus': consensus,
-                    'num_agents': num_agents,
-                    'rep': rep_name,
-                    'exp_key': exp_key,
-                    'efficiency_pct': efficiency_pct,
-                    'max_height': max_height,
-                    'total_blocks': total_blocks_produced,
-                })
+    show_outliers = bool(globals().get('SHOW_OUTLIERS', True))
+    show_data_points = bool(globals().get('SHOW_DATA_POINTS', False))
 
-    # Convert to DataFrame
-    plot_df = pd.DataFrame(rows)
-    
-    # Use generic visualization function
-    _create_consensus_boxplot_visualization(
-        plot_df=plot_df,
-        metric_column='efficiency_pct',
-        ylabel='Efficiency (%)',
-        plot_title='Block Production Efficiency (BPE)',
-        comparison_title='Efficiency Comparison Across Consensus Algorithms',
-        ylim=(0, 100),
-        no_data_message="No efficiency data found. Ensure CSVs contain HEIGHT column and block production data is available.",
+    n_variants = max(1, len(ordered_variants))
+    fig, ax_box = plt.subplots(figsize=(max(10, 1.2 * n_variants * len(agent_counts)), 8.0))
+
+    box_width = 0.45 / n_variants
+    group_width = box_width * n_variants
+    group_gap = 0.25
+
+    group_starts = []
+    current_position = 0.0
+    for _ in agent_counts:
+        group_starts.append(current_position)
+        current_position += group_width + group_gap
+
+    all_positions = []
+    all_box_data = []
+    all_variants = []
+    for group_start, n_agents in zip(group_starts, agent_counts):
+        for v_idx, variant in enumerate(ordered_variants):
+            subset = plot_df[(plot_df['num_agents'] == n_agents) & (plot_df['consensus'] == variant)]
+            if subset.empty:
+                continue
+            all_positions.append(group_start + v_idx * box_width)
+            all_box_data.append(subset[metric_column].values)
+            all_variants.append(variant)
+
+    if all_box_data:
+        bp = ax_box.boxplot(
+            all_box_data,
+            positions=all_positions,
+            widths=box_width * 0.9,
+            patch_artist=True,
+            showfliers=False,
+        )
+        for patch, variant in zip(bp['boxes'], all_variants):
+            patch.set_facecolor(color_map[variant])
+            patch.set_alpha(0.78)
+
+        if show_data_points:
+            for pos, variant, values in zip(all_positions, all_variants, all_box_data):
+                point_values = np.asarray(values, dtype=np.float64)
+                point_values = point_values[np.isfinite(point_values)]
+                if point_values.size == 0:
+                    continue
+                point_x = np.full(point_values.size, pos, dtype=np.float64)
+                ax_box.scatter(
+                    point_x, point_values, s=14, alpha=0.22,
+                    color=color_map[variant], edgecolors='none', zorder=2,
+                )
+
+        if show_outliers:
+            for pos, values in zip(all_positions, all_box_data):
+                point_values = np.asarray(values, dtype=np.float64)
+                point_values = point_values[np.isfinite(point_values)]
+                if point_values.size == 0:
+                    continue
+                q1, q3 = np.percentile(point_values, [25, 75])
+                iqr = q3 - q1
+                lower_bound = q1 - 1.5 * iqr
+                upper_bound = q3 + 1.5 * iqr
+                outlier_mask = (point_values < lower_bound) | (point_values > upper_bound)
+                outlier_values = point_values[outlier_mask]
+                if outlier_values.size == 0:
+                    continue
+                outlier_x = np.full(outlier_values.size, pos, dtype=np.float64)
+                ax_box.scatter(
+                    outlier_x, outlier_values, marker='*', s=70,
+                    facecolors='black', edgecolors='black', linewidths=0.5, zorder=8,
+                )
+
+        group_centers = [start + (group_width - box_width) / 2 for start in group_starts]
+        ax_box.set_xticks(group_centers)
+        ax_box.set_xticklabels([str(n) for n in agent_counts], fontsize=20)
+        ax_box.set_xlim(min(all_positions) - box_width, max(all_positions) + box_width)
+    else:
+        ax_box.text(0.5, 0.5, 'No data', ha='center', va='center', transform=ax_box.transAxes, fontsize=20)
+
+    ax_box.set_xlabel('Number of Agents', fontsize=24, fontweight='bold')
+    ax_box.set_ylabel(ylabel, fontsize=24, fontweight='bold')
+    ax_box.set_title(plot_title, fontsize=28, fontweight='bold')
+    ax_box.grid(axis='y', linestyle='--', alpha=0.3)
+    ax_box.tick_params(axis='both', which='major', labelsize=20)
+    if ylim_to_use is not None:
+        ax_box.set_ylim(ylim_to_use)
+
+    legend_handles = [Patch(facecolor=color_map[variant], alpha=0.78, label=variant) for variant in ordered_variants]
+    ax_box.legend(handles=legend_handles, loc='best', fontsize=20, title='Consensus', title_fontsize=20)
+
+    plt.tight_layout()
+    _save_plot_if_needed(
+        fig,
+        plot_name=plot_name or plot_title,
+        exp_key=exp_key,
         save_path=save_path,
         dpi=dpi,
-        plot_name='efficiency_boxplot',
     )
+    plt.show()
+    plt.close(fig)
+
+    print(f"\nSummary Statistics ({ylabel}):")
+    summary = plot_df.groupby(['consensus', 'num_agents'])[metric_column].agg(['count', 'mean', 'median', 'std', 'min', 'max'])
+    print(summary.to_string())
 
 
-def show_total_produced_blocks_boxplot(save_path=None, dpi=None):
-    """Boxplot of total produced blocks by consensus and number of agents.
-    Uses the same overall layout style as BPE (per-consensus boxplots + comparison line chart)."""
-
-    if 'block_production_counts' not in globals() or not globals().get('block_production_counts'):
-        print("No `block_production_counts` available. Load data first using the CSV picker.")
-        return
-
-    block_counts = globals().get('block_production_counts', {})
-    exp_choices = sorted(block_counts.keys())
+def _compute_total_produced_blocks_rows():
+    """Per-run Total Produced Blocks (TPB) rows: number of distinct block hashes
+    in the block observation data for that run."""
+    loaded_blocks = globals().get('loaded_blocks', {})
+    exp_choices = sorted(loaded_blocks.keys())
 
     rows = []  # each row: consensus, num_agents, rep, total_blocks_produced
 
@@ -2906,8 +3318,11 @@ def show_total_produced_blocks_boxplot(save_path=None, dpi=None):
             print(f"Skipping {exp_key}: doesn't match consensus_number pattern")
             continue
 
-        for rep_name, producer_counts in block_counts.get(exp_key, {}).items():
-            total_blocks_produced = int(sum(producer_counts.values()))
+        for rep_name, blocks_dict in loaded_blocks.get(exp_key, {}).items():
+            if not isinstance(blocks_dict, dict):
+                continue
+
+            total_blocks_produced = len(blocks_dict)
 
             if total_blocks_produced > 0:
                 rows.append({
@@ -2918,32 +3333,60 @@ def show_total_produced_blocks_boxplot(save_path=None, dpi=None):
                     'total_blocks_produced': total_blocks_produced,
                 })
 
-    plot_df = pd.DataFrame(rows)
+    return rows
+
+
+def show_total_produced_blocks_boxplot(save_path=None, dpi=None):
+    """Boxplot of total produced blocks by consensus and number of agents.
+
+    Counts the number of distinct blocks observed in each run (i.e. the number
+    of distinct block hashes in the block observation data), rather than
+    summing per-robot counts parsed from monitor.log."""
+
+    if 'loaded_blocks' not in globals() or not globals().get('loaded_blocks'):
+        print("No `loaded_blocks` available. Use the picker and click Load data first.")
+        return
+
+    plot_df = pd.DataFrame(_compute_total_produced_blocks_rows())
 
     _create_consensus_boxplot_visualization(
         plot_df=plot_df,
         metric_column='total_blocks_produced',
-        ylabel='Total Produced Blocks',
+        ylabel='TPB',
         plot_title='Total Produced Blocks (TPB)',
         comparison_title='Total Produced Blocks Comparison Across Consensus Algorithms',
-        no_data_message="No block production data found. Ensure block production counts are loaded.",
+        no_data_message="No block observation data found. Ensure block observation JSON files are loaded.",
         save_path=save_path,
         dpi=dpi,
         plot_name='total_produced_blocks_boxplot',
     )
 
 
-def show_agent_speed_boxplot(save_path=None, dpi=None):
-    """Boxplot of robot speeds read from monitor.log files.
+def show_total_produced_blocks_boxplot_combined(save_path=None, dpi=None, consensus_order=None):
+    """Combined single-panel version of `show_total_produced_blocks_boxplot`: all
+    consensus protocols shown as grouped boxplots at each agent count."""
 
-    Each robot contributes one speed sample, so the plot shows the distribution of
-    assigned agent speeds across repetitions for every consensus / agent-count pair.
-    """
-
-    if 'robot_speeds' not in globals() or not globals().get('robot_speeds'):
-        print("No robot speed data available. Load data first using the CSV picker.")
+    if 'loaded_blocks' not in globals() or not globals().get('loaded_blocks'):
+        print("No `loaded_blocks` available. Use the picker and click Load data first.")
         return
 
+    plot_df = pd.DataFrame(_compute_total_produced_blocks_rows())
+
+    _create_combined_consensus_boxplot(
+        plot_df=plot_df,
+        metric_column='total_blocks_produced',
+        ylabel='TBP',
+        plot_title='Total Produced Blocks (TPB)',
+        no_data_message="No block observation data found. Ensure block observation JSON files are loaded.",
+        save_path=save_path,
+        dpi=dpi,
+        plot_name='total_produced_blocks_boxplot_combined',
+        consensus_order=consensus_order or ['C-PoA', 'R-PoA', 'PoA', 'PoW'],
+    )
+
+
+def _compute_agent_speed_rows():
+    """Per-robot agent speed rows, read from monitor.log files."""
     robot_speeds = globals().get('robot_speeds', {})
     exp_choices = sorted(robot_speeds.keys())
 
@@ -2970,7 +3413,21 @@ def show_agent_speed_boxplot(save_path=None, dpi=None):
                     'agent_speed': float(speed),
                 })
 
-    plot_df = pd.DataFrame(rows)
+    return rows
+
+
+def show_agent_speed_boxplot(save_path=None, dpi=None):
+    """Boxplot of robot speeds read from monitor.log files.
+
+    Each robot contributes one speed sample, so the plot shows the distribution of
+    assigned agent speeds across repetitions for every consensus / agent-count pair.
+    """
+
+    if 'robot_speeds' not in globals() or not globals().get('robot_speeds'):
+        print("No robot speed data available. Load data first using the CSV picker.")
+        return
+
+    plot_df = pd.DataFrame(_compute_agent_speed_rows())
 
     _create_consensus_boxplot_visualization(
         plot_df=plot_df,
@@ -2986,18 +3443,33 @@ def show_agent_speed_boxplot(save_path=None, dpi=None):
     )
 
 
-def show_bpa_gini_main_chain_boxplot(save_path=None, dpi=None):
-    """BPE-style plot of degree of decentralization for main-chain block production by robot.
+def show_agent_speed_boxplot_combined(save_path=None, dpi=None, consensus_order=None):
+    """Combined single-panel version of `show_agent_speed_boxplot`: all
+    consensus protocols shown as grouped boxplots at each agent count."""
 
-    For each run, counts how many blocks each robot contributed to the main chain,
-    computes a Gini coefficient over that per-robot distribution, inverts it as
-    1 - gini, and compares across consensus algorithms and agent counts.
-    """
-
-    if 'loaded_data' not in globals() or not globals().get('loaded_data'):
-        print("No `loaded_data` available. Use the picker and click Load data first.")
+    if 'robot_speeds' not in globals() or not globals().get('robot_speeds'):
+        print("No robot speed data available. Load data first using the CSV picker.")
         return
 
+    plot_df = pd.DataFrame(_compute_agent_speed_rows())
+
+    _create_combined_consensus_boxplot(
+        plot_df=plot_df,
+        metric_column='agent_speed',
+        ylabel='Agent speed',
+        plot_title='Agent Speeds',
+        ylim=None,
+        no_data_message='No agent speed data found. Ensure monitor.log contains lines like "speed: 17.0".',
+        save_path=save_path,
+        dpi=dpi,
+        plot_name='agent_speeds_boxplot_combined',
+        consensus_order=consensus_order or ['C-PoA', 'R-PoA', 'PoA', 'PoW'],
+    )
+
+
+def _compute_decentralization_rows():
+    """Per-run Degree of Decentralization (D) rows: D = (1 - Gini) * 100 of
+    main-chain block production across robots."""
     loaded_data = globals().get('loaded_data', {})
     block_hashes = globals().get('block_produced_hash', {})
     block_counts = globals().get('block_production_counts', {})
@@ -3099,13 +3571,28 @@ def show_bpa_gini_main_chain_boxplot(save_path=None, dpi=None):
                 'n_robots': int(len(counts)),
             })
 
-    plot_df = pd.DataFrame(rows)
+    return rows
+
+
+def show_bpa_gini_main_chain_boxplot(save_path=None, dpi=None):
+    """BPE-style plot of degree of decentralization for main-chain block production by robot.
+
+    For each run, counts how many blocks each robot contributed to the main chain,
+    computes a Gini coefficient over that per-robot distribution, inverts it as
+    1 - gini, and compares across consensus algorithms and agent counts.
+    """
+
+    if 'loaded_data' not in globals() or not globals().get('loaded_data'):
+        print("No `loaded_data` available. Use the picker and click Load data first.")
+        return
+
+    plot_df = pd.DataFrame(_compute_decentralization_rows())
 
     _create_consensus_boxplot_visualization(
         plot_df=plot_df,
         metric_column='decentralization_main_chain',
-        ylabel='Degree of Decentralization [%]',
-        plot_title='Degree of Decentralization (DoD)',
+        ylabel='D [%]',
+        plot_title=None,
         comparison_title='Decentralization Comparison Across Consensus Algorithms',
         ylim=(0, 100),
         no_data_message='No main-chain production data found. Ensure runs include MINER data.',
@@ -3115,21 +3602,33 @@ def show_bpa_gini_main_chain_boxplot(save_path=None, dpi=None):
     )
 
 
-def show_vulnerability_boxplot(save_path=None, dpi=None):
-    """Boxplot of a security score per run.
-
-    For each run, sum main-chain difficulty per producer, sort producers by their
-    total main-chain difficulty contribution, and find the minimum number of
-    producers needed to reach at least 51% of the total main-chain difficulty.
-
-    The plotted metric is:
-        security = nakamoto_coefficient / number_of_robots
-    """
+def show_bpa_gini_main_chain_boxplot_combined(save_path=None, dpi=None, consensus_order=None):
+    """Combined single-panel version of `show_bpa_gini_main_chain_boxplot`: all
+    consensus protocols shown as grouped boxplots at each agent count."""
 
     if 'loaded_data' not in globals() or not globals().get('loaded_data'):
         print("No `loaded_data` available. Use the picker and click Load data first.")
         return
 
+    plot_df = pd.DataFrame(_compute_decentralization_rows())
+
+    _create_combined_consensus_boxplot(
+        plot_df=plot_df,
+        metric_column='decentralization_main_chain',
+        ylabel='D [%]',
+        plot_title=None,
+        ylim=(0, 100),
+        no_data_message='No main-chain production data found. Ensure runs include MINER data.',
+        save_path=save_path,
+        dpi=dpi,
+        plot_name='degree_of_decentralization_main_chain_boxplot_combined',
+        consensus_order=consensus_order or ['C-PoA', 'R-PoA', 'PoA', 'PoW'],
+    )
+
+
+def _compute_security_rows():
+    """Per-run Security (S) rows: S = V / |N|, where V is the Nakamoto
+    coefficient over main-chain difficulty contributed by each producer."""
     loaded_data = globals().get('loaded_data', {})
     block_hashes = globals().get('block_produced_hash', {})
     exp_choices = sorted(loaded_data.keys())
@@ -3242,27 +3741,192 @@ def show_vulnerability_boxplot(save_path=None, dpi=None):
                 'n_robots': int(len(difficulty_values)),
             })
 
-    plot_df = pd.DataFrame(rows)
+    return rows
+
+
+def show_security_boxplot(save_path=None, dpi=None):
+    """Boxplot of Security (S) per run.
+
+    For each run, sum main-chain difficulty per producer, sort producers by their
+    total main-chain difficulty contribution, and find the minimum number of
+    producers needed to reach at least 51% of the total main-chain difficulty
+    (the Nakamoto coefficient V).
+
+    The plotted metric is:
+        S = V / number_of_robots
+    """
+
+    if 'loaded_data' not in globals() or not globals().get('loaded_data'):
+        print("No `loaded_data` available. Use the picker and click Load data first.")
+        return
+
+    plot_df = pd.DataFrame(_compute_security_rows())
 
     _create_consensus_boxplot_visualization(
         plot_df=plot_df,
         metric_column='security_score',
-        ylabel='Nakamoto coefficient / robots',
-        plot_title='Security (Nakamoto Coefficient / Robots)',
+        ylabel='Security (S)',
+        plot_title=None,
         comparison_title='Security Comparison Across Consensus Algorithms',
         ylim=None,
         no_data_message='No security data found. Ensure runs include main-chain TDIFF and MINER data.',
         save_path=save_path,
         dpi=dpi,
-        plot_name='security_nakamoto_coefficient',
+        plot_name='security_boxplot',
     )
 
 
-def show_agreement_boxplot(save_path=None, dpi=None):
-    """Boxplot showing fraction of observations that refer to main-chain blocks.
+def show_security_boxplot_combined(save_path=None, dpi=None, consensus_order=None):
+    """Combined single-panel version of `show_security_boxplot`: all
+    consensus protocols shown as grouped boxplots at each agent count."""
+
+    if 'loaded_data' not in globals() or not globals().get('loaded_data'):
+        print("No `loaded_data` available. Use the picker and click Load data first.")
+        return
+
+    plot_df = pd.DataFrame(_compute_security_rows())
+
+    _create_combined_consensus_boxplot(
+        plot_df=plot_df,
+        metric_column='security_score',
+        ylabel='S',
+        plot_title=None,
+        ylim=None,
+        no_data_message='No security data found. Ensure runs include main-chain TDIFF and MINER data.',
+        save_path=save_path,
+        dpi=dpi,
+        plot_name='security_boxplot_combined',
+        consensus_order=consensus_order or ['C-PoA', 'R-PoA', 'PoA', 'PoW'],
+    )
+
+
+def _compute_agreement_rows(trim_enabled=False):
+    """Compute per-run agreement-efficiency rows from `loaded_blocks`/`loaded_data`.
 
     Metric per run (presented as percentage):
         100 * (observations_of_mainchain_blocks / total_number_of_observations)
+
+    When `trim_enabled` is set, restricts analysis to observations up to the
+    timestamp of the last observation that made a block fully accepted.
+    """
+    loaded_blocks = globals().get('loaded_blocks', {})
+    exp_choices = sorted(loaded_blocks.keys())
+    rows = []
+
+    for exp_key in exp_choices:
+        consensus, num_agents = _extract_config_info(exp_key)
+        if consensus is None or num_agents is None:
+            print(f"Skipping {exp_key}: doesn't match consensus_number pattern")
+            continue
+
+        for rep_name, blocks_dict in loaded_blocks.get(exp_key, {}).items():
+            if not isinstance(blocks_dict, dict) or not blocks_dict:
+                continue
+
+            block_frames = [df for df in blocks_dict.values() if isinstance(df, pd.DataFrame) and not df.empty]
+            if not block_frames:
+                continue
+
+            combined = pd.concat(block_frames, ignore_index=True)
+            if 'block_hash' not in combined.columns or 'observer_id' not in combined.columns:
+                continue
+
+            combined = combined.copy()
+            combined['block_hash'] = combined['block_hash'].astype(str)
+            combined['observer_id'] = combined['observer_id'].astype(str)
+
+            observer_ids = set(combined['observer_id'].dropna().astype(str).values)
+            if not observer_ids:
+                continue
+
+            filtered = combined
+
+            if trim_enabled:
+                if 'received_at' not in combined.columns:
+                    continue
+
+                combined['_received_at_num'] = pd.to_numeric(combined['received_at'], errors='coerce')
+                fully_accepted_times = []
+
+                for _, block_df in combined.groupby('block_hash', sort=False):
+                    block_observers = set(block_df['observer_id'].dropna().astype(str).values)
+                    if block_observers == observer_ids:
+                        max_received = block_df['_received_at_num'].max(skipna=True)
+                        if pd.notna(max_received):
+                            fully_accepted_times.append(float(max_received))
+
+                if not fully_accepted_times:
+                    continue
+
+                cutoff = max(fully_accepted_times)
+                filtered = combined[
+                    combined['_received_at_num'].notna() & (combined['_received_at_num'] <= cutoff)
+                ].copy()
+
+                if filtered.empty:
+                    continue
+
+            total_observations = int(len(filtered))
+
+            # Determine main-chain block hashes for this run using the best robot
+            # chain (highest last-block TDIFF). We try to match any hash-like
+            # column in the robot CSVs to the observed block_hash values.
+            observations_set = set(filtered['block_hash'].dropna().astype(str).unique())
+
+            loaded_data = globals().get('loaded_data', {})
+            robots_dict = loaded_data.get(exp_key, {}).get(rep_name, {}) if isinstance(loaded_data, dict) else {}
+            main_chain_df = get_main_chain(robots_dict) if robots_dict else None
+
+            main_hashes: Set[str] = set()
+            if isinstance(main_chain_df, pd.DataFrame):
+                # Candidate column names that often contain block hashes
+                candidates = ['HASH', 'hash', 'block_hash', 'BLOCK_HASH', 'Hash', 'hash_id']
+                # First try well-known names
+                for c in candidates:
+                    if c in main_chain_df.columns:
+                        vals = main_chain_df[c].astype(str).dropna().unique()
+                        intersect = set(vals).intersection(observations_set)
+                        if intersect:
+                            main_hashes.update(intersect)
+                # If still empty, scan all object-like columns and pick any overlap
+                if not main_hashes:
+                    for c in main_chain_df.columns:
+                        if main_chain_df[c].dtype == object or pd.api.types.is_string_dtype(main_chain_df[c]):
+                            vals = main_chain_df[c].astype(str).dropna().unique()
+                            intersect = set(vals).intersection(observations_set)
+                            if intersect:
+                                # choose this column's overlap
+                                main_hashes.update(intersect)
+                                break
+
+            # If we couldn't infer main-chain hashes, skip this run
+            if not main_hashes:
+                continue
+
+            # Count observations that refer to main-chain blocks
+            obs_mainchain_count = int(filtered['block_hash'].astype(str).isin(main_hashes).sum())
+            if total_observations <= 0:
+                continue
+
+            mainchain_obs_pct = 100.0 * (obs_mainchain_count / float(total_observations))
+
+            rows.append({
+                'consensus': consensus,
+                'num_agents': num_agents,
+                'rep': rep_name,
+                'exp_key': exp_key,
+                'mainchain_obs_pct': mainchain_obs_pct,
+                'observations_of_mainchain': int(obs_mainchain_count),
+                'total_observations': total_observations,
+                'n_robots': int(len(observer_ids)),
+            })
+
+    return rows
+
+
+def show_agreement_boxplot(save_path=None, dpi=None):
+    """Boxplot showing fraction of observations that refer to main-chain blocks,
+    split into one subplot per consensus family plus a comparison line chart.
 
     A toggle switch named "trim" lets you restrict analysis to observations up
     to the timestamp of the last observation that made a block fully accepted.
@@ -3271,122 +3935,6 @@ def show_agreement_boxplot(save_path=None, dpi=None):
     if 'loaded_blocks' not in globals() or not globals().get('loaded_blocks'):
         print("No `loaded_blocks` available. Use the picker and click Load data first.")
         return
-
-    loaded_blocks = globals().get('loaded_blocks', {})
-    exp_choices = sorted(loaded_blocks.keys())
-
-    def _compute_rows(trim_enabled=False):
-        rows = []
-
-        for exp_key in exp_choices:
-            consensus, num_agents = _extract_config_info(exp_key)
-            if consensus is None or num_agents is None:
-                print(f"Skipping {exp_key}: doesn't match consensus_number pattern")
-                continue
-
-            for rep_name, blocks_dict in loaded_blocks.get(exp_key, {}).items():
-                if not isinstance(blocks_dict, dict) or not blocks_dict:
-                    continue
-
-                block_frames = [df for df in blocks_dict.values() if isinstance(df, pd.DataFrame) and not df.empty]
-                if not block_frames:
-                    continue
-
-                combined = pd.concat(block_frames, ignore_index=True)
-                if 'block_hash' not in combined.columns or 'observer_id' not in combined.columns:
-                    continue
-
-                combined = combined.copy()
-                combined['block_hash'] = combined['block_hash'].astype(str)
-                combined['observer_id'] = combined['observer_id'].astype(str)
-
-                observer_ids = set(combined['observer_id'].dropna().astype(str).values)
-                if not observer_ids:
-                    continue
-
-                filtered = combined
-
-                if trim_enabled:
-                    if 'received_at' not in combined.columns:
-                        continue
-
-                    combined['_received_at_num'] = pd.to_numeric(combined['received_at'], errors='coerce')
-                    fully_accepted_times = []
-
-                    for _, block_df in combined.groupby('block_hash', sort=False):
-                        block_observers = set(block_df['observer_id'].dropna().astype(str).values)
-                        if block_observers == observer_ids:
-                            max_received = block_df['_received_at_num'].max(skipna=True)
-                            if pd.notna(max_received):
-                                fully_accepted_times.append(float(max_received))
-
-                    if not fully_accepted_times:
-                        continue
-
-                    cutoff = max(fully_accepted_times)
-                    filtered = combined[
-                        combined['_received_at_num'].notna() & (combined['_received_at_num'] <= cutoff)
-                    ].copy()
-
-                    if filtered.empty:
-                        continue
-
-                total_observations = int(len(filtered))
-
-                # Determine main-chain block hashes for this run using the best robot
-                # chain (highest last-block TDIFF). We try to match any hash-like
-                # column in the robot CSVs to the observed block_hash values.
-                observations_set = set(filtered['block_hash'].dropna().astype(str).unique())
-
-                loaded_data = globals().get('loaded_data', {})
-                robots_dict = loaded_data.get(exp_key, {}).get(rep_name, {}) if isinstance(loaded_data, dict) else {}
-                main_chain_df = get_main_chain(robots_dict) if robots_dict else None
-
-                main_hashes: Set[str] = set()
-                if isinstance(main_chain_df, pd.DataFrame):
-                    # Candidate column names that often contain block hashes
-                    candidates = ['HASH', 'hash', 'block_hash', 'BLOCK_HASH', 'Hash', 'hash_id']
-                    # First try well-known names
-                    for c in candidates:
-                        if c in main_chain_df.columns:
-                            vals = main_chain_df[c].astype(str).dropna().unique()
-                            intersect = set(vals).intersection(observations_set)
-                            if intersect:
-                                main_hashes.update(intersect)
-                    # If still empty, scan all object-like columns and pick any overlap
-                    if not main_hashes:
-                        for c in main_chain_df.columns:
-                            if main_chain_df[c].dtype == object or pd.api.types.is_string_dtype(main_chain_df[c]):
-                                vals = main_chain_df[c].astype(str).dropna().unique()
-                                intersect = set(vals).intersection(observations_set)
-                                if intersect:
-                                    # choose this column's overlap
-                                    main_hashes.update(intersect)
-                                    break
-
-                # If we couldn't infer main-chain hashes, skip this run
-                if not main_hashes:
-                    continue
-
-                # Count observations that refer to main-chain blocks
-                obs_mainchain_count = int(filtered['block_hash'].astype(str).isin(main_hashes).sum())
-                if total_observations <= 0:
-                    continue
-
-                mainchain_obs_pct = 100.0 * (obs_mainchain_count / float(total_observations))
-
-                rows.append({
-                    'consensus': consensus,
-                    'num_agents': num_agents,
-                    'rep': rep_name,
-                    'exp_key': exp_key,
-                    'mainchain_obs_pct': mainchain_obs_pct,
-                    'observations_of_mainchain': int(obs_mainchain_count),
-                    'total_observations': total_observations,
-                    'n_robots': int(len(observer_ids)),
-                })
-
-        return rows
 
     trim_toggle = widgets.ToggleButton(
         value=False,
@@ -3400,7 +3948,7 @@ def show_agreement_boxplot(save_path=None, dpi=None):
     def _render(trim_enabled):
         with preview_out:
             preview_out.clear_output()
-            plot_df = pd.DataFrame(_compute_rows(trim_enabled=trim_enabled))
+            plot_df = pd.DataFrame(_compute_agreement_rows(trim_enabled=trim_enabled))
             _create_consensus_boxplot_visualization(
                 plot_df=plot_df,
                 metric_column='mainchain_obs_pct',
@@ -3411,6 +3959,55 @@ def show_agreement_boxplot(save_path=None, dpi=None):
                 save_path=save_path,
                 dpi=dpi,
                 plot_name='agreement_boxplot_trimmed' if trim_enabled else 'agreement_boxplot',
+            )
+
+    def _on_trim_toggle(change):
+        enabled = bool(change['new'])
+        trim_toggle.description = f"trim: {'ON' if enabled else 'OFF'}"
+        trim_toggle.button_style = 'success' if enabled else ''
+        _render(enabled)
+
+    trim_toggle.observe(_on_trim_toggle, names='value')
+    display(widgets.HBox([trim_toggle]), preview_out)
+    _render(False)
+
+
+def show_agreement_boxplot_combined(save_path=None, dpi=None):
+    """Agreement Efficiency (AE) boxplot with all consensus protocols combined
+    into a single panel: one x-position per agent count, with one box per
+    consensus variant shown side-by-side at that agent count.
+
+    A toggle switch named "trim" lets you restrict analysis to observations up
+    to the timestamp of the last observation that made a block fully accepted.
+    """
+
+    if 'loaded_blocks' not in globals() or not globals().get('loaded_blocks'):
+        print("No `loaded_blocks` available. Use the picker and click Load data first.")
+        return
+
+    trim_toggle = widgets.ToggleButton(
+        value=False,
+        description='trim: OFF',
+        button_style='',
+        tooltip='Trim to observations up to the last full-acceptance event',
+        icon='cut',
+    )
+    preview_out = widgets.Output()
+
+    def _render(trim_enabled):
+        with preview_out:
+            preview_out.clear_output()
+            plot_df = pd.DataFrame(_compute_agreement_rows(trim_enabled=trim_enabled))
+            _create_combined_consensus_boxplot(
+                plot_df=plot_df,
+                metric_column='mainchain_obs_pct',
+                ylabel='AE [%]',
+                plot_title=None,
+                no_data_message='No main-chain observation data found. Ensure block observation JSON files and CSVs are loaded.',
+                save_path=save_path,
+                dpi=dpi,
+                plot_name='agreement_boxplot_combined_trimmed' if trim_enabled else 'agreement_boxplot_combined',
+                consensus_order=['C-PoA', 'R-PoA', 'PoA', 'PoW'],
             )
 
     def _on_trim_toggle(change):
@@ -3689,6 +4286,7 @@ def show_block_production_by_robot(save_path=None, dpi=None):
                     dpi=dpi,
                 )
                 plt.show()
+                plt.close(fig)
 
                 if summary_rows:
                     summary_df = pd.DataFrame(summary_rows)
@@ -3731,20 +4329,15 @@ def show_block_production_by_robot(save_path=None, dpi=None):
     print("Not supported for this experiment format. Use experiments with consensus_number pattern.")
 
 
-def show_trap_residence_time_boxplot(save_path=None, dpi=None):
-    """Boxplot of trap residence time per robot, grouped by consensus and number of agents.
-
-    The metric is computed from each robot's zone.csv by pairing ENTER/EXIT events,
-    then aggregated per run and normalized by experiment duration times number of agents.
-    """
-
+def _compute_trap_residence_rows():
+    """Per-run Trap Residence Time (TRT) rows, from zone.csv ENTER/EXIT events."""
     loaded_zones = globals().get('loaded_zones', {})
     if not loaded_zones:
         loaded_zones = _load_zones_for_loaded_data()
 
     if not loaded_zones:
         print("No trap-zone data available. Load experiment data first so the plot can read zone.csv files.")
-        return
+        return []
 
     exp_choices = sorted(loaded_zones.keys())
     experiment_length = _get_experiment_length_seconds()
@@ -3793,12 +4386,22 @@ def show_trap_residence_time_boxplot(save_path=None, dpi=None):
                 'counted_robots': int(counted_robots),
             })
 
-    plot_df = pd.DataFrame(rows)
+    return rows
+
+
+def show_trap_residence_time_boxplot(save_path=None, dpi=None):
+    """Boxplot of trap residence time per robot, grouped by consensus and number of agents.
+
+    The metric is computed from each robot's zone.csv by pairing ENTER/EXIT events,
+    then aggregated per run and normalized by experiment duration times number of agents.
+    """
+
+    plot_df = pd.DataFrame(_compute_trap_residence_rows())
 
     _create_consensus_boxplot_visualization(
         plot_df=plot_df,
         metric_column='trap_residence_pct',
-        ylabel='Trap residence time (%)',
+        ylabel='TRT [%]',
         plot_title='Trap Residence Time (TRT)',
         comparison_title='Trap Residence Time Comparison Across Consensus Algorithms',
         ylim=(0, 100),
@@ -3809,8 +4412,28 @@ def show_trap_residence_time_boxplot(save_path=None, dpi=None):
     )
 
 
-def show_interpartition_contact_frequency_boxplot(save_path=None, dpi=None):
-    """Boxplot of inter-partition contact frequency (ICF) per run.
+def show_trap_residence_time_boxplot_combined(save_path=None, dpi=None, consensus_order=None):
+    """Combined single-panel version of `show_trap_residence_time_boxplot`: all
+    consensus protocols shown as grouped boxplots at each agent count."""
+
+    plot_df = pd.DataFrame(_compute_trap_residence_rows())
+
+    _create_combined_consensus_boxplot(
+        plot_df=plot_df,
+        metric_column='trap_residence_pct',
+        ylabel='Trap residence time (%)',
+        plot_title='Trap Residence Time (TRT)',
+        ylim=(0, 100),
+        no_data_message='No trap residence data found. Ensure zone.csv files with ENTER/EXIT events are loaded.',
+        save_path=save_path,
+        dpi=dpi,
+        plot_name='trap_residence_time_boxplot_combined',
+        consensus_order=consensus_order or ['C-PoA', 'R-PoA', 'PoA', 'PoW'],
+    )
+
+
+def _compute_icf_rows():
+    """Per-run Inter-partition Contact Frequency (ICF) rows.
 
     Groups are inferred dynamically from peer exchanges and trap membership:
     - trapped-group: robots that exchanged while both participants were trapped,
@@ -3825,7 +4448,7 @@ def show_interpartition_contact_frequency_boxplot(save_path=None, dpi=None):
     loaded_data = globals().get('loaded_data', {})
     if not loaded_data:
         print("No loaded_data found. Load experiment data first.")
-        return
+        return []
 
     loaded_zones = globals().get('loaded_zones', {})
     if not loaded_zones:
@@ -3896,12 +4519,22 @@ def show_interpartition_contact_frequency_boxplot(save_path=None, dpi=None):
                 'inter_partition_contact_pct': (float(inter_partition_contacts) / float(total_contacts)) * 100.0,
             })
 
-    plot_df = pd.DataFrame(rows)
+    return rows
+
+
+def show_interpartition_contact_frequency_boxplot(save_path=None, dpi=None):
+    """Boxplot of inter-partition contact frequency (ICF) per run.
+
+    The metric per run is:
+      100 * (# peer exchanges between trapped-group and free-group) / (# total peer exchanges)
+    """
+
+    plot_df = pd.DataFrame(_compute_icf_rows())
 
     _create_consensus_boxplot_visualization(
         plot_df=plot_df,
         metric_column='inter_partition_contact_pct',
-        ylabel='Inter-partition contact frequency (%)',
+        ylabel='ICF [%]',
         plot_title='Inter-partition Contact Frequency (ICF)',
         comparison_title='Inter-partition Contact Frequency Comparison Across Consensus Algorithms',
         ylim=(0, 100),
@@ -3909,4 +4542,24 @@ def show_interpartition_contact_frequency_boxplot(save_path=None, dpi=None):
         save_path=save_path,
         dpi=dpi,
         plot_name='interpartition_contact_frequency_boxplot',
+    )
+
+
+def show_interpartition_contact_frequency_boxplot_combined(save_path=None, dpi=None, consensus_order=None):
+    """Combined single-panel version of `show_interpartition_contact_frequency_boxplot`:
+    all consensus protocols shown as grouped boxplots at each agent count."""
+
+    plot_df = pd.DataFrame(_compute_icf_rows())
+
+    _create_combined_consensus_boxplot(
+        plot_df=plot_df,
+        metric_column='inter_partition_contact_pct',
+        ylabel='ICF [%]',
+        plot_title='Inter-partition Contact Frequency (ICF)',
+        ylim=(0, 100),
+        no_data_message='No peer-contact data found. Ensure monitor.log contains "Robot X added peer Y at T" lines.',
+        save_path=save_path,
+        dpi=dpi,
+        plot_name='interpartition_contact_frequency_boxplot_combined',
+        consensus_order=consensus_order or ['C-PoA', 'R-PoA', 'PoA', 'PoW'],
     )
