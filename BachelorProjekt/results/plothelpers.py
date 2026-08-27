@@ -34,7 +34,7 @@ SHOW_OUTLIERS = False
 SHOW_DATA_POINTS = False
 # When True, data from different experiments is kept separate even if it shares the
 # same consensus name. Charts then use prefixed labels such as "1#C-PoA".
-SEPARATE_EXPERIMENT_DATA = False
+SEPARATE_EXPERIMENT_DATA = True
 
 
 def configure_plot_saving(enabled=True, plot_dir='plots', dpi=300):
@@ -59,19 +59,53 @@ def _slugify_plot_name(name: str) -> str:
     return safe or 'plot'
 
 
+def _multi_experiment_folder_name(loaded: Dict) -> Optional[str]:
+    """Build a save-folder name like 'S1_S4' for a plot spanning multiple
+    experiments (e.g. experiment_01_random_walk and experiment_04_foraging),
+    using each experiment's real numeric id. Returns None if there's only one
+    experiment, or if any experiment's id can't be parsed."""
+    top_levels = {_top_level_experiment_name(str(k)) for k in loaded.keys()}
+    if len(top_levels) <= 1:
+        return None
+
+    numbers = set()
+    for top in top_levels:
+        number = _experiment_number_from_key(top)
+        if number is None:
+            return None
+        numbers.add(int(number))
+
+    return '_'.join(f"S{n}" for n in sorted(numbers))
+
+
 def _infer_experiment_folder(exp_key: Optional[str] = None) -> str:
-    if exp_key:
-        return _slugify_plot_name(str(exp_key).replace('/', '__'))
+    def _base_folder_name() -> str:
+        if exp_key:
+            return _slugify_plot_name(str(exp_key).replace('/', '__'))
 
-    selected_csv_map = globals().get('selected_csv_map', {})
-    if isinstance(selected_csv_map, dict) and len(selected_csv_map) == 1:
-        return _slugify_plot_name(str(next(iter(selected_csv_map.keys()))).replace('/', '__'))
+        selected_csv_map = globals().get('selected_csv_map', {})
+        if isinstance(selected_csv_map, dict) and len(selected_csv_map) == 1:
+            return _slugify_plot_name(str(next(iter(selected_csv_map.keys()))).replace('/', '__'))
 
-    loaded = globals().get('loaded_data', {})
-    if isinstance(loaded, dict) and len(loaded) == 1:
-        return _slugify_plot_name(str(next(iter(loaded.keys()))).replace('/', '__'))
+        loaded = globals().get('loaded_data', {})
+        if isinstance(loaded, dict) and len(loaded) == 1:
+            return _slugify_plot_name(str(next(iter(loaded.keys()))).replace('/', '__'))
 
-    return 'combined'
+        if isinstance(loaded, dict) and loaded:
+            multi_name = _multi_experiment_folder_name(loaded)
+            if multi_name:
+                return _slugify_plot_name(multi_name)
+        elif isinstance(selected_csv_map, dict) and selected_csv_map:
+            multi_name = _multi_experiment_folder_name(selected_csv_map)
+            if multi_name:
+                return _slugify_plot_name(multi_name)
+
+        return 'combined'
+
+    folder_name = _base_folder_name()
+    if bool(globals().get('SEPARATE_EXPERIMENT_DATA', True)):
+        folder_name = f"separated_{folder_name}"
+    return folder_name
 
 
 def _save_plot_if_needed(fig, plot_name: str, exp_key: Optional[str] = None, save_path: Optional[str] = None, dpi: Optional[int] = None):
@@ -750,7 +784,7 @@ def _experiment_legend_label(exp_key: str) -> str:
     return cleaned_top_level
 
 
-def _add_experiment_legend(fig, exp_keys: List[str], *, existing_handles=None, existing_labels=None):
+def _add_experiment_legend(fig, exp_keys: List[str], *, existing_handles=None, existing_labels=None, fontsize=12):
     if not globals().get('EXPERIMENT_VARIANT_PREFIXING', False):
         return
 
@@ -783,7 +817,7 @@ def _add_experiment_legend(fig, exp_keys: List[str], *, existing_handles=None, e
         ncol=max(1, min(4, len(labels))),
         frameon=False,
         bbox_to_anchor=(0.5, 0.975),
-        fontsize=12,
+        fontsize=fontsize,
     )
 
 
@@ -2263,7 +2297,7 @@ def show_block_propagation_delay_combined(threshold=0.8, title=None, ylabel='BPD
         no_data_message='No block propagation delay data found. Ensure observations and timestamps are present.',
         save_path=save_path,
         dpi=dpi,
-        plot_name='block_propagation_delay_80pct_combined',
+        plot_name='BPD',
         consensus_order=consensus_order or ['C-PoA', 'R-PoA', 'PoA', 'PoW'],
     )
 
@@ -2356,12 +2390,11 @@ def show_liveness_scatter(threshold=0.8, save_path=None, dpi=None, consensus_ord
     """Liveness plot combining Block Interval (BI) and Block Propagation Delay (BPD)
     on one pair of axes, one point per (consensus, swarm size).
 
-    For every consensus protocol, one point per swarm size is plotted at
-    (median BI, median BPD) across that size's runs, labeled with the agent
-    count and connected by a line in increasing agent-count order. A
-    translucent rectangle behind each point spans the interquartile range
-    (Q1-Q3) of BI and BPD for that swarm size, mirroring the box part of a
-    boxplot.
+    X-axis is BPD, y-axis is BI. For every consensus protocol, one point per
+    swarm size is plotted at (median BPD, median BI) across that size's runs,
+    labeled with the agent count and connected by a line in increasing
+    agent-count order. A translucent rectangle behind each point spans the
+    interquartile range (Q1-Q3) of BPD and BI for that swarm size.
     """
     if 'loaded_data' not in globals() or not globals().get('loaded_data'):
         print("No `loaded_data` available. Use the picker and click Load data first.")
@@ -2426,11 +2459,14 @@ def show_liveness_scatter(threshold=0.8, save_path=None, dpi=None, consensus_ord
         consensus_types, base_order=consensus_order or ['C-PoA', 'R-PoA', 'PoA', 'PoW']
     )
 
-    # Dark line/marker/label color per base consensus, used only for the line, dots,
-    # and agent-count labels; the translucent IQR-box area keeps the original color_map shade.
+    # Dark line/marker/label color per base consensus, used for the line, dots,
+    # and labels; the translucent per-point IQR rectangle keeps the original,
+    # softer color_map shade.
     line_color_overrides = {'PoW': '#0b5e0b'}
 
-    fig, ax = plt.subplots(figsize=(9, 7))
+    fig, ax = plt.subplots(figsize=(14, 11))
+
+    label_specs = []  # (x, y, text, color), placed after all points/lines are drawn
 
     for variant in ordered_variants:
         sub = run_df[run_df['consensus'] == variant]
@@ -2455,9 +2491,9 @@ def show_liveness_scatter(threshold=0.8, save_path=None, dpi=None, consensus_ord
             med_bpd.append(bpd_med)
 
             rect = Rectangle(
-                (bi_q1, bpd_q1),
-                max(bi_q3 - bi_q1, 1e-9),
+                (bpd_q1, bi_q1),
                 max(bpd_q3 - bpd_q1, 1e-9),
+                max(bi_q3 - bi_q1, 1e-9),
                 facecolor=color,
                 alpha=0.18,
                 edgecolor=color,
@@ -2467,29 +2503,69 @@ def show_liveness_scatter(threshold=0.8, save_path=None, dpi=None, consensus_ord
             ax.add_patch(rect)
 
         ax.plot(
-            med_bi, med_bpd,
-            color=line_color, marker='o', markersize=7, linewidth=2,
-            markeredgecolor='black', markeredgewidth=1.2,
+            med_bpd, med_bi,
+            color=line_color, marker='o', markersize=21, linewidth=6,
+            markeredgecolor='black', markeredgewidth=3.6,
             label=variant, zorder=3,
         )
 
-        for x, y, n_agents in zip(med_bi, med_bpd, agent_counts):
-            ax.annotate(
-                str(n_agents), (x, y),
-                textcoords="offset points", xytext=(6, 6),
-                fontsize=9, color=line_color, fontweight='bold', zorder=4,
-            )
+        for x, y, n_agents in zip(med_bpd, med_bi, agent_counts):
+            label_specs.append((x, y, str(n_agents), line_color))
 
-    ax.set_xlabel('BI [s]', fontsize=12, fontweight='bold')
-    ax.set_ylabel('BPD [s]', fontsize=12, fontweight='bold')
-    ax.set_title('Liveness overview', fontsize=13, fontweight='bold')
+    ax.set_xlabel('BPD [s]', fontsize=48, fontweight='bold')
+    ax.set_ylabel('BI [s]', fontsize=48, fontweight='bold')
+    ax.set_title(None, fontsize=52, fontweight='bold')
     ax.grid(True, linestyle='--', alpha=0.3)
     ax.set_xlim(left=0)
     ax.set_ylim(bottom=0)
-    ax.legend(loc='best', fontsize=10, title='Consensus')
+    ax.tick_params(axis='both', which='major', labelsize=40)
 
-    plt.tight_layout()
-    _save_plot_if_needed(fig, plot_name='liveness_bi_vs_bpd', exp_key=None, save_path=save_path, dpi=dpi)
+    handles, labels = ax.get_legend_handles_labels()
+    info_handle = Line2D([], [], color='none', label='Numbers = agent count')
+    ax.legend(
+        handles=handles + [info_handle], labels=labels + ['Numbers = agent count'],
+        loc='best', fontsize=20, title='Consensus', title_fontsize=20,
+    )
+    fig.tight_layout()
+
+    # Place the agent-count labels so they don't overlap each other: try a set of
+    # candidate offsets per label and keep the first one whose bounding box is
+    # clear of every label placed so far (checked in display/pixel coordinates).
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    candidate_offsets = [
+        (20, 18), (20, -34), (-48, 18), (-48, -34),
+        (20, 48), (-48, 48), (20, -64), (-48, -64),
+    ]
+    placed_bboxes = []
+    for x, y, text, label_color in label_specs:
+        chosen_bbox = None
+        chosen_ann = None
+        for dx, dy in candidate_offsets:
+            ann = ax.annotate(
+                text, (x, y),
+                textcoords="offset points", xytext=(dx, dy),
+                fontsize=26, color=label_color, fontweight='bold', zorder=5,
+                bbox=dict(boxstyle='round,pad=0.12', fc='white', ec='none', alpha=0.75),
+            )
+            bbox = ann.get_window_extent(renderer)
+            if not any(bbox.overlaps(other) for other in placed_bboxes):
+                chosen_bbox = bbox
+                chosen_ann = ann
+                break
+            ann.remove()
+        if chosen_ann is None:
+            # No collision-free spot found; fall back to the default offset.
+            chosen_ann = ax.annotate(
+                text, (x, y),
+                textcoords="offset points", xytext=candidate_offsets[0],
+                fontsize=26, color=label_color, fontweight='bold', zorder=5,
+                bbox=dict(boxstyle='round,pad=0.12', fc='white', ec='none', alpha=0.75),
+            )
+            chosen_bbox = chosen_ann.get_window_extent(renderer)
+        placed_bboxes.append(chosen_bbox)
+
+    _save_plot_if_needed(fig, plot_name='liveness', exp_key=None, save_path=save_path, dpi=dpi)
     plt.show()
     plt.close(fig)
 
@@ -2797,7 +2873,7 @@ def show_block_interval_mean_overview_combined(title=None, ylabel='BI [s]', save
         no_data_message='No valid BI data found for overview plot.',
         save_path=save_path,
         dpi=dpi,
-        plot_name='mean_bi_overview_combined',
+        plot_name='BI',
         consensus_order=consensus_order or ['C-PoA', 'R-PoA', 'PoA', 'PoW'],
     )
 
@@ -2816,6 +2892,36 @@ def _split_consensus_variant(consensus_name: str) -> Tuple[Optional[int], str, s
 def _base_consensus_name(consensus_name: str) -> str:
     _, base, _ = _split_consensus_variant(consensus_name)
     return base
+
+
+def _experiment_number_from_key(exp_key: str) -> Optional[str]:
+    """Extract the experiment's numeric id from its top-level folder name,
+    e.g. 'experiment_04_foraging/...' -> '4' (leading zeros stripped)."""
+    top_level = _top_level_experiment_name(str(exp_key))
+    m = re.search(r'experiment[_-]?0*(\d+)', top_level, flags=re.IGNORECASE)
+    if not m:
+        return None
+    return str(int(m.group(1)))
+
+
+def _combined_variant_legend_label(variant: str, plot_df: pd.DataFrame) -> str:
+    """Legend label for one consensus variant in the combined boxplot: the
+    plain base name when there's no experiment split, otherwise 'S<experiment
+    number> <base>' (e.g. 'S4 PoA' for experiment_04_foraging)."""
+    idx, base, _ = _split_consensus_variant(variant)
+    if idx is None:
+        return variant
+
+    number = None
+    if 'exp_key' in plot_df.columns:
+        subset_keys = plot_df.loc[plot_df['consensus'] == variant, 'exp_key'].dropna().astype(str)
+        for exp_key in subset_keys:
+            number = _experiment_number_from_key(exp_key)
+            if number is not None:
+                break
+    if number is None:
+        number = str(idx)
+    return f"S{number} {base}"
 
 
 def _variant_sort_key(consensus_name: str):
@@ -3010,6 +3116,7 @@ def _create_consensus_boxplot_visualization(
                 widths=box_width,
                 patch_artist=True,
                 showfliers=False,
+                medianprops=dict(color='black'),
             )
 
             for patch, (_, variant, _) in zip(bp['boxes'], ordered_variants):
@@ -3155,6 +3262,60 @@ def _create_consensus_boxplot_visualization(
     display(overall)
 
 
+# Shared style for the combined single-panel boxplots (AE, BPD, BI, S, D, TRT,
+# ICF, TPB): bigger text and thinner, more tightly-grouped boxes. Change these
+# values to restyle all of them at once. `show_agent_speed_boxplot_combined`
+# opts out (passes 1.0/1.0/1.0 explicitly) and keeps the original sizing.
+COMBINED_BOXPLOT_FONT_SCALE = 2.0
+COMBINED_BOXPLOT_BOX_WIDTH_SCALE = 0.35
+COMBINED_BOXPLOT_GROUP_GAP_SCALE = 0.49
+COMBINED_BOXPLOT_OUTLINE_LINEWIDTH = 9.0
+# Outer axes frame: drawn black at this thickness; the horizontal gridlines
+# are styled to match (same color, same thickness).
+COMBINED_BOXPLOT_FRAME_LINEWIDTH = 3.0
+# Fraction of the figure's width reserved on the right for the consensus
+# legend, which is drawn outside the axes since it no longer fits inside.
+COMBINED_BOXPLOT_LEGEND_WIDTH_FRACTION = 0.24
+
+
+def _reorder_variants_by_experiment(
+    ordered_variants: List[str], plot_df: pd.DataFrame, experiment_order: List[int]
+) -> List[str]:
+    """Reorder consensus variants within each base protocol group by real
+    experiment number, following `experiment_order` (e.g. [4, 2, 1, 3]).
+    Variants with no experiment prefix, or whose number isn't in
+    `experiment_order`, keep their original relative order at the end."""
+    priority = {number: i for i, number in enumerate(experiment_order)}
+
+    def _experiment_number(variant: str) -> Optional[int]:
+        idx, _, _ = _split_consensus_variant(variant)
+        if idx is None:
+            return None
+        if 'exp_key' in plot_df.columns:
+            subset_keys = plot_df.loc[plot_df['consensus'] == variant, 'exp_key'].dropna().astype(str)
+            for exp_key in subset_keys:
+                number = _experiment_number_from_key(exp_key)
+                if number is not None:
+                    return int(number)
+        return idx
+
+    bases_in_order: List[str] = []
+    variants_by_base: Dict[str, List[str]] = {}
+    for variant in ordered_variants:
+        base = _base_consensus_name(variant)
+        if base not in variants_by_base:
+            variants_by_base[base] = []
+            bases_in_order.append(base)
+        variants_by_base[base].append(variant)
+
+    reordered: List[str] = []
+    for base in bases_in_order:
+        reordered.extend(
+            sorted(variants_by_base[base], key=lambda v: priority.get(_experiment_number(v), len(priority)))
+        )
+    return reordered
+
+
 def _create_combined_consensus_boxplot(
     plot_df,
     metric_column,
@@ -3167,9 +3328,23 @@ def _create_combined_consensus_boxplot(
     exp_key=None,
     plot_name=None,
     consensus_order: Optional[List[str]] = None,
+    experiment_order: Optional[List[int]] = None,
+    font_scale: float = COMBINED_BOXPLOT_FONT_SCALE,
+    box_width_scale: float = COMBINED_BOXPLOT_BOX_WIDTH_SCALE,
+    group_gap_scale: float = COMBINED_BOXPLOT_GROUP_GAP_SCALE,
 ):
     """Single-panel boxplot with one x-position per agent count, holding one box
-    per consensus variant side-by-side (all consensus protocols on one axes)."""
+    per consensus variant side-by-side (all consensus protocols on one axes).
+
+    Args:
+        font_scale: multiplies all text sizes (title, axis labels, ticks, legend).
+        box_width_scale: multiplies the width of each individual box.
+        group_gap_scale: multiplies the gap between agent-count groups.
+        experiment_order: optional list of real experiment numbers (e.g.
+            [4, 2, 1, 3]) giving the left-to-right / legend order of
+            experiment variants within each base protocol group. Has no
+            effect when experiment data isn't separated/prefixed.
+    """
     if plot_df.empty:
         print(no_data_message)
         return
@@ -3197,16 +3372,24 @@ def _create_combined_consensus_boxplot(
     consensus_types = sorted(plot_df['consensus'].unique())
     agent_counts = sorted(plot_df['num_agents'].unique())
     color_map, _, _, ordered_variants = _build_consensus_style(consensus_types, base_order=consensus_order)
+    if experiment_order:
+        ordered_variants = _reorder_variants_by_experiment(ordered_variants, plot_df, experiment_order)
 
     show_outliers = bool(globals().get('SHOW_OUTLIERS', True))
     show_data_points = bool(globals().get('SHOW_DATA_POINTS', False))
 
     n_variants = max(1, len(ordered_variants))
-    fig, ax_box = plt.subplots(figsize=(max(10, 1.2 * n_variants * len(agent_counts)), 8.0))
+    layout_scale = (box_width_scale + group_gap_scale) / 2.0
+    legend_width_fraction = COMBINED_BOXPLOT_LEGEND_WIDTH_FRACTION
+    plot_width = max(13, 1.5 * n_variants * len(agent_counts) * layout_scale) * font_scale
+    fig, ax_box = plt.subplots(figsize=(
+        plot_width / (1 - legend_width_fraction),
+        10.5 * font_scale,
+    ))
 
-    box_width = 0.45 / n_variants
+    box_width = (0.45 / n_variants) * box_width_scale
     group_width = box_width * n_variants
-    group_gap = 0.25
+    group_gap = 0.25 * group_gap_scale
 
     group_starts = []
     current_position = 0.0
@@ -3233,6 +3416,10 @@ def _create_combined_consensus_boxplot(
             widths=box_width * 0.9,
             patch_artist=True,
             showfliers=False,
+            boxprops=dict(linewidth=COMBINED_BOXPLOT_OUTLINE_LINEWIDTH),
+            whiskerprops=dict(linewidth=COMBINED_BOXPLOT_OUTLINE_LINEWIDTH),
+            capprops=dict(linewidth=COMBINED_BOXPLOT_OUTLINE_LINEWIDTH),
+            medianprops=dict(linewidth=COMBINED_BOXPLOT_OUTLINE_LINEWIDTH, color='black'),
         )
         for patch, variant in zip(bp['boxes'], all_variants):
             patch.set_facecolor(color_map[variant])
@@ -3272,23 +3459,39 @@ def _create_combined_consensus_boxplot(
 
         group_centers = [start + (group_width - box_width) / 2 for start in group_starts]
         ax_box.set_xticks(group_centers)
-        ax_box.set_xticklabels([str(n) for n in agent_counts], fontsize=20)
+        ax_box.set_xticklabels([str(n) for n in agent_counts], fontsize=36 * font_scale)
         ax_box.set_xlim(min(all_positions) - box_width, max(all_positions) + box_width)
     else:
-        ax_box.text(0.5, 0.5, 'No data', ha='center', va='center', transform=ax_box.transAxes, fontsize=20)
+        ax_box.text(0.5, 0.5, 'No data', ha='center', va='center', transform=ax_box.transAxes, fontsize=20 * font_scale)
 
-    ax_box.set_xlabel('Number of Agents', fontsize=24, fontweight='bold')
-    ax_box.set_ylabel(ylabel, fontsize=24, fontweight='bold')
-    ax_box.set_title(plot_title, fontsize=28, fontweight='bold')
-    ax_box.grid(axis='y', linestyle='--', alpha=0.3)
-    ax_box.tick_params(axis='both', which='major', labelsize=20)
+    ax_box.set_xlabel('Number of Agents', fontsize=36 * font_scale, fontweight='bold')
+    ax_box.set_ylabel(ylabel, fontsize=36 * font_scale, fontweight='bold')
+    ax_box.set_title(plot_title, fontsize=42 * font_scale, fontweight='bold')
+    ax_box.grid(axis='y', linestyle='--', alpha=0.3, color='black', linewidth=COMBINED_BOXPLOT_FRAME_LINEWIDTH)
+    ax_box.set_axisbelow(True)
+    for spine in ax_box.spines.values():
+        spine.set_color('black')
+        spine.set_linewidth(COMBINED_BOXPLOT_FRAME_LINEWIDTH)
+    ax_box.tick_params(axis='both', which='major', labelsize=36 * font_scale)
     if ylim_to_use is not None:
         ax_box.set_ylim(ylim_to_use)
 
-    legend_handles = [Patch(facecolor=color_map[variant], alpha=0.78, label=variant) for variant in ordered_variants]
-    ax_box.legend(handles=legend_handles, loc='best', fontsize=20, title='Consensus', title_fontsize=20)
+    legend_handles = [
+        Patch(facecolor=color_map[variant], alpha=0.78, label=_combined_variant_legend_label(variant, plot_df))
+        for variant in ordered_variants
+    ]
+    legend = ax_box.legend(
+        handles=legend_handles,
+        loc='center left',
+        bbox_to_anchor=(1.02, 0.5),
+        borderaxespad=0.0,
+        fontsize=30 * font_scale,
+        title='Consensus',
+        title_fontsize=30 * font_scale,
+    )
+    legend.get_frame().set_linewidth(2.5)
 
-    plt.tight_layout()
+    fig.tight_layout(rect=(0, 0, 1 - legend_width_fraction, 1))
     _save_plot_if_needed(
         fig,
         plot_name=plot_name or plot_title,
@@ -3353,7 +3556,7 @@ def show_total_produced_blocks_boxplot(save_path=None, dpi=None):
         plot_df=plot_df,
         metric_column='total_blocks_produced',
         ylabel='TPB',
-        plot_title='Total Produced Blocks (TPB)',
+        plot_title=None,
         comparison_title='Total Produced Blocks Comparison Across Consensus Algorithms',
         no_data_message="No block observation data found. Ensure block observation JSON files are loaded.",
         save_path=save_path,
@@ -3375,13 +3578,14 @@ def show_total_produced_blocks_boxplot_combined(save_path=None, dpi=None, consen
     _create_combined_consensus_boxplot(
         plot_df=plot_df,
         metric_column='total_blocks_produced',
-        ylabel='TBP',
-        plot_title='Total Produced Blocks (TPB)',
+        ylabel='TPB',
+        plot_title=None,
         no_data_message="No block observation data found. Ensure block observation JSON files are loaded.",
         save_path=save_path,
         dpi=dpi,
-        plot_name='total_produced_blocks_boxplot_combined',
+        plot_name='TPB',
         consensus_order=consensus_order or ['C-PoA', 'R-PoA', 'PoA', 'PoW'],
+        experiment_order=[4, 2, 1, 3],
     )
 
 
@@ -3464,6 +3668,11 @@ def show_agent_speed_boxplot_combined(save_path=None, dpi=None, consensus_order=
         dpi=dpi,
         plot_name='agent_speeds_boxplot_combined',
         consensus_order=consensus_order or ['C-PoA', 'R-PoA', 'PoA', 'PoW'],
+        # Opts out of the shared big-text/thin-box style used by the other
+        # combined plots (AE, BPD, BI, S, D, TRT, ICF, TPB).
+        font_scale=1.0,
+        box_width_scale=1.0,
+        group_gap_scale=1.0,
     )
 
 
@@ -3621,7 +3830,7 @@ def show_bpa_gini_main_chain_boxplot_combined(save_path=None, dpi=None, consensu
         no_data_message='No main-chain production data found. Ensure runs include MINER data.',
         save_path=save_path,
         dpi=dpi,
-        plot_name='degree_of_decentralization_main_chain_boxplot_combined',
+        plot_name='D',
         consensus_order=consensus_order or ['C-PoA', 'R-PoA', 'PoA', 'PoW'],
     )
 
@@ -3647,20 +3856,23 @@ def _compute_security_rows():
         return s
 
     def _compute_main_chain_difficulty_by_producer_for_run(exp_key, rep_name, robots_dict):
+        """Sum each producer's own per-block difficulty `DIFF` (the block field `d`)
+        on the main chain, not the cumulative `TDIFF` (running total difficulty of
+        the chain, used only for chain selection in `get_main_chain`)."""
         producer_difficulty = {}
 
         main_chain_df = get_main_chain(robots_dict)
-        if main_chain_df is None or 'TDIFF' not in main_chain_df.columns:
+        if main_chain_df is None or 'DIFF' not in main_chain_df.columns:
             return producer_difficulty
 
         if 'MINER' in main_chain_df.columns:
             rows = main_chain_df.iloc[1:]
             for _, row in rows.iterrows():
                 producer = _parse_producer_id(row.get('MINER'))
-                tdiff = pd.to_numeric(row.get('TDIFF'), errors='coerce')
-                if producer is None or pd.isna(tdiff):
+                diff = pd.to_numeric(row.get('DIFF'), errors='coerce')
+                if producer is None or pd.isna(diff):
                     continue
-                producer_difficulty[producer] = producer_difficulty.get(producer, 0.0) + float(tdiff)
+                producer_difficulty[producer] = producer_difficulty.get(producer, 0.0) + float(diff)
             return producer_difficulty
 
         if 'HASH' not in main_chain_df.columns:
@@ -3682,8 +3894,8 @@ def _compute_security_rows():
 
         rows = main_chain_df.iloc[1:]
         for _, row in rows.iterrows():
-            tdiff = pd.to_numeric(row.get('TDIFF'), errors='coerce')
-            if pd.isna(tdiff):
+            diff = pd.to_numeric(row.get('DIFF'), errors='coerce')
+            if pd.isna(diff):
                 continue
 
             row_hash = row.get('HASH')
@@ -3699,7 +3911,7 @@ def _compute_security_rows():
             if matched_producer is None:
                 continue
 
-            producer_difficulty[matched_producer] = producer_difficulty.get(matched_producer, 0.0) + float(tdiff)
+            producer_difficulty[matched_producer] = producer_difficulty.get(matched_producer, 0.0) + float(diff)
 
         return producer_difficulty
 
@@ -3728,7 +3940,11 @@ def _compute_security_rows():
             cumulative = np.cumsum(sorted_difficulty)
             threshold = 0.51 * total_difficulty
             nakamoto_coefficient = int(np.searchsorted(cumulative, threshold, side='left') + 1)
-            security_score = float(nakamoto_coefficient) / float(len(difficulty_values)) if len(difficulty_values) > 0 else np.nan
+            # Normalize by the swarm size |N| (all robots in the run), not just the
+            # subset that happened to produce a main-chain block: a robot that never
+            # got a block onto the main chain is still part of N per the thesis
+            # definition (S = V / |N|), so excluding it would inflate the score.
+            security_score = float(nakamoto_coefficient) / float(num_agents) if num_agents > 0 else np.nan
 
             rows.append({
                 'consensus': consensus,
@@ -3795,7 +4011,7 @@ def show_security_boxplot_combined(save_path=None, dpi=None, consensus_order=Non
         no_data_message='No security data found. Ensure runs include main-chain TDIFF and MINER data.',
         save_path=save_path,
         dpi=dpi,
-        plot_name='security_boxplot_combined',
+        plot_name='S',
         consensus_order=consensus_order or ['C-PoA', 'R-PoA', 'PoA', 'PoW'],
     )
 
@@ -4006,7 +4222,7 @@ def show_agreement_boxplot_combined(save_path=None, dpi=None):
                 no_data_message='No main-chain observation data found. Ensure block observation JSON files and CSVs are loaded.',
                 save_path=save_path,
                 dpi=dpi,
-                plot_name='agreement_boxplot_combined_trimmed' if trim_enabled else 'agreement_boxplot_combined',
+                plot_name='AE_trimmed' if trim_enabled else 'AE',
                 consensus_order=['C-PoA', 'R-PoA', 'PoA', 'PoW'],
             )
 
@@ -4402,7 +4618,7 @@ def show_trap_residence_time_boxplot(save_path=None, dpi=None):
         plot_df=plot_df,
         metric_column='trap_residence_pct',
         ylabel='TRT [%]',
-        plot_title='Trap Residence Time (TRT)',
+        plot_title=None,#'Trap Residence Time (TRT)',
         comparison_title='Trap Residence Time Comparison Across Consensus Algorithms',
         ylim=(0, 100),
         no_data_message='No trap residence data found. Ensure zone.csv files with ENTER/EXIT events are loaded.',
@@ -4422,12 +4638,12 @@ def show_trap_residence_time_boxplot_combined(save_path=None, dpi=None, consensu
         plot_df=plot_df,
         metric_column='trap_residence_pct',
         ylabel='Trap residence time (%)',
-        plot_title='Trap Residence Time (TRT)',
+        plot_title=None,#'Trap Residence Time (TRT)',
         ylim=(0, 100),
         no_data_message='No trap residence data found. Ensure zone.csv files with ENTER/EXIT events are loaded.',
         save_path=save_path,
         dpi=dpi,
-        plot_name='trap_residence_time_boxplot_combined',
+        plot_name='TRT',
         consensus_order=consensus_order or ['C-PoA', 'R-PoA', 'PoA', 'PoW'],
     )
 
@@ -4535,7 +4751,7 @@ def show_interpartition_contact_frequency_boxplot(save_path=None, dpi=None):
         plot_df=plot_df,
         metric_column='inter_partition_contact_pct',
         ylabel='ICF [%]',
-        plot_title='Inter-partition Contact Frequency (ICF)',
+        plot_title=None,#'Inter-partition Contact Frequency (ICF)',
         comparison_title='Inter-partition Contact Frequency Comparison Across Consensus Algorithms',
         ylim=(0, 100),
         no_data_message='No peer-contact data found. Ensure monitor.log contains "Robot X added peer Y at T" lines.',
@@ -4555,11 +4771,11 @@ def show_interpartition_contact_frequency_boxplot_combined(save_path=None, dpi=N
         plot_df=plot_df,
         metric_column='inter_partition_contact_pct',
         ylabel='ICF [%]',
-        plot_title='Inter-partition Contact Frequency (ICF)',
+        plot_title=None,#'Inter-partition Contact Frequency (ICF)',
         ylim=(0, 100),
         no_data_message='No peer-contact data found. Ensure monitor.log contains "Robot X added peer Y at T" lines.',
         save_path=save_path,
         dpi=dpi,
-        plot_name='interpartition_contact_frequency_boxplot_combined',
+        plot_name='ICF',
         consensus_order=consensus_order or ['C-PoA', 'R-PoA', 'PoA', 'PoW'],
     )
