@@ -2524,7 +2524,7 @@ def show_liveness_scatter(threshold=0.8, save_path=None, dpi=None, consensus_ord
     info_handle = Line2D([], [], color='none', label='Numbers = agent count')
     ax.legend(
         handles=handles + [info_handle], labels=labels + ['Numbers = agent count'],
-        loc='best', fontsize=20, title='Consensus', title_fontsize=20,
+        loc='best', fontsize=20,
     )
     fig.tight_layout()
 
@@ -3276,6 +3276,9 @@ COMBINED_BOXPLOT_FRAME_LINEWIDTH = 3.0
 # Fraction of the figure's width reserved on the right for the consensus
 # legend, which is drawn outside the axes since it no longer fits inside.
 COMBINED_BOXPLOT_LEGEND_WIDTH_FRACTION = 0.24
+# Fraction of the figure's height reserved above the axes for the consensus
+# legend when legend_position='top' (drawn as a single row).
+COMBINED_BOXPLOT_LEGEND_TOP_FRACTION = 0.14
 
 
 def _reorder_variants_by_experiment(
@@ -3332,6 +3335,7 @@ def _create_combined_consensus_boxplot(
     font_scale: float = COMBINED_BOXPLOT_FONT_SCALE,
     box_width_scale: float = COMBINED_BOXPLOT_BOX_WIDTH_SCALE,
     group_gap_scale: float = COMBINED_BOXPLOT_GROUP_GAP_SCALE,
+    legend_position: str = 'right',
 ):
     """Single-panel boxplot with one x-position per agent count, holding one box
     per consensus variant side-by-side (all consensus protocols on one axes).
@@ -3344,6 +3348,9 @@ def _create_combined_consensus_boxplot(
             [4, 2, 1, 3]) giving the left-to-right / legend order of
             experiment variants within each base protocol group. Has no
             effect when experiment data isn't separated/prefixed.
+        legend_position: 'right' (default) draws the consensus legend outside
+            the axes on the right, stacked vertically. 'top' draws it above
+            the axes instead, as a single horizontal row.
     """
     if plot_df.empty:
         print(no_data_message)
@@ -3381,11 +3388,13 @@ def _create_combined_consensus_boxplot(
     n_variants = max(1, len(ordered_variants))
     layout_scale = (box_width_scale + group_gap_scale) / 2.0
     legend_width_fraction = COMBINED_BOXPLOT_LEGEND_WIDTH_FRACTION
+    legend_top_fraction = COMBINED_BOXPLOT_LEGEND_TOP_FRACTION
     plot_width = max(13, 1.5 * n_variants * len(agent_counts) * layout_scale) * font_scale
-    fig, ax_box = plt.subplots(figsize=(
-        plot_width / (1 - legend_width_fraction),
-        10.5 * font_scale,
-    ))
+    plot_height = 10.5 * font_scale
+    if legend_position == 'top':
+        fig, ax_box = plt.subplots(figsize=(plot_width, plot_height / (1 - legend_top_fraction)))
+    else:
+        fig, ax_box = plt.subplots(figsize=(plot_width / (1 - legend_width_fraction), plot_height))
 
     box_width = (0.45 / n_variants) * box_width_scale
     group_width = box_width * n_variants
@@ -3480,18 +3489,27 @@ def _create_combined_consensus_boxplot(
         Patch(facecolor=color_map[variant], alpha=0.78, label=_combined_variant_legend_label(variant, plot_df))
         for variant in ordered_variants
     ]
-    legend = ax_box.legend(
-        handles=legend_handles,
-        loc='center left',
-        bbox_to_anchor=(1.02, 0.5),
-        borderaxespad=0.0,
-        fontsize=30 * font_scale,
-        title='Consensus',
-        title_fontsize=30 * font_scale,
-    )
-    legend.get_frame().set_linewidth(2.5)
-
-    fig.tight_layout(rect=(0, 0, 1 - legend_width_fraction, 1))
+    if legend_position == 'top':
+        legend = ax_box.legend(
+            handles=legend_handles,
+            loc='lower center',
+            bbox_to_anchor=(0.5, 1.02),
+            ncol=max(1, len(legend_handles)),
+            borderaxespad=0.0,
+            fontsize=30 * font_scale,
+        )
+        legend.get_frame().set_linewidth(2.5)
+        fig.tight_layout(rect=(0, 0, 1, 1 - legend_top_fraction))
+    else:
+        legend = ax_box.legend(
+            handles=legend_handles,
+            loc='center left',
+            bbox_to_anchor=(1.02, 0.5),
+            borderaxespad=0.0,
+            fontsize=30 * font_scale,
+        )
+        legend.get_frame().set_linewidth(2.5)
+        fig.tight_layout(rect=(0, 0, 1 - legend_width_fraction, 1))
     _save_plot_if_needed(
         fig,
         plot_name=plot_name or plot_title,
@@ -3837,7 +3855,9 @@ def show_bpa_gini_main_chain_boxplot_combined(save_path=None, dpi=None, consensu
 
 def _compute_security_rows():
     """Per-run Security (S) rows: S = V / |N|, where V is the Nakamoto
-    coefficient over main-chain difficulty contributed by each producer."""
+    coefficient over main-chain difficulty contributed by each producer, and
+    |N| is the number of distinct producers on the main chain (i.e. S is
+    evaluated purely from main-chain data, not the full swarm size)."""
     loaded_data = globals().get('loaded_data', {})
     block_hashes = globals().get('block_produced_hash', {})
     exp_choices = sorted(loaded_data.keys())
@@ -3940,11 +3960,14 @@ def _compute_security_rows():
             cumulative = np.cumsum(sorted_difficulty)
             threshold = 0.51 * total_difficulty
             nakamoto_coefficient = int(np.searchsorted(cumulative, threshold, side='left') + 1)
-            # Normalize by the swarm size |N| (all robots in the run), not just the
-            # subset that happened to produce a main-chain block: a robot that never
-            # got a block onto the main chain is still part of N per the thesis
-            # definition (S = V / |N|), so excluding it would inflate the score.
-            security_score = float(nakamoto_coefficient) / float(num_agents) if num_agents > 0 else np.nan
+            # S is evaluated only over the main chain: |N| is the number of
+            # distinct producers that actually appear on the main chain, not
+            # the full swarm size.
+            n_main_chain_producers = len(difficulty_values)
+            security_score = (
+                float(nakamoto_coefficient) / float(n_main_chain_producers)
+                if n_main_chain_producers > 0 else np.nan
+            )
 
             rows.append({
                 'consensus': consensus,
@@ -3969,7 +3992,7 @@ def show_security_boxplot(save_path=None, dpi=None):
     (the Nakamoto coefficient V).
 
     The plotted metric is:
-        S = V / number_of_robots
+        S = V / number_of_main_chain_producers
     """
 
     if 'loaded_data' not in globals() or not globals().get('loaded_data'):
@@ -4007,7 +4030,7 @@ def show_security_boxplot_combined(save_path=None, dpi=None, consensus_order=Non
         metric_column='security_score',
         ylabel='S',
         plot_title=None,
-        ylim=None,
+        ylim=(0, 1),
         no_data_message='No security data found. Ensure runs include main-chain TDIFF and MINER data.',
         save_path=save_path,
         dpi=dpi,
