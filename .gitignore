@@ -141,3 +141,11 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+# Generated ARGoS experiment configs: envsubst-rendered from the *.x.argos
+# templates by starter.sh on every run, so they always contain whichever
+# machine last ran an experiment (e.g. absolute paths under that machine's
+# $HOME). Never hand-edit or commit these; edit the *.x.argos template instead.
+BachelorProjekt/experiments/foraging.argos
+BachelorProjekt/experiments/greeter.argos
+BachelorProjekt/experiments/obstacle.argos

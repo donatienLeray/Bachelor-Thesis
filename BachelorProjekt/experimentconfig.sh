@@ -1,9 +1,14 @@
 # [PATHS]
+# Auto-detected from this script's own location so nothing here needs to be
+# personalized: EXPERIMENTFOLDER is this script's directory (BachelorProjekt/),
+# and MAINFOLDER is its parent (the repo root), matching the argos-python/
+# toychain submodule paths declared in .gitmodules. Must be sourced (or run)
+# with BachelorProjekt/ as the working directory, as documented in the README.
 export HOMEFOLDER="$HOME"
-export MAINFOLDER="$HOMEFOLDER/toychain-argos"
+export EXPERIMENTFOLDER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export MAINFOLDER="$(dirname "$EXPERIMENTFOLDER")"
 export ARGOSFOLDER="$MAINFOLDER/argos-python"
 export TOYCHFOLDER="$MAINFOLDER/toychain"
-export EXPERIMENTFOLDER="$MAINFOLDER/BachelorProjekt"
 # [[ ":$PATH:" != *":$MAINFOLDER/scripts:"* ]] && export PATH=$PATH:$MAINFOLDER/scripts
 
 # [SC]

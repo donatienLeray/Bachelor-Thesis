@@ -24,7 +24,7 @@ from matplotlib.lines import Line2D
 from matplotlib.colors import to_rgb
 from matplotlib.patches import Patch, Rectangle
 
-SAVED_DIR = Path("/home/dodo/experiment_picker_saves")
+SAVED_DIR = Path.home() / "experiment_picker_saves"
 PLOT_DIR = Path('plots')
 AUTO_SAVE_PLOTS = False
 DEFAULT_PLOT_DPI = 300
