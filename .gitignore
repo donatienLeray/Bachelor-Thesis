@@ -127,3 +127,17 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Editor / IDE local settings (personal, not needed to clone/use the repo)
+.vscode/
+.idea/
+.claude/settings.local.json
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Editor swap/backup files
+*.swp
+*.swo
+*~
