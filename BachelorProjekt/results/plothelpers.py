@@ -35,6 +35,10 @@ SHOW_DATA_POINTS = False
 # When True, data from different experiments is kept separate even if it shares the
 # same consensus name. Charts then use prefixed labels such as "1#C-PoA".
 SEPARATE_EXPERIMENT_DATA = True
+# When True, loading a fully-selected experiment reuses its saved bundle (from
+# SAVED_DIR) instead of re-parsing every CSV, if one already covers it.
+# Toggleable from the notebook ("Use saved data").
+USE_SAVED_DATA = True
 
 
 def configure_plot_saving(enabled=True, plot_dir='plots', dpi=300):
@@ -79,31 +83,34 @@ def _multi_experiment_folder_name(loaded: Dict) -> Optional[str]:
 
 
 def _infer_experiment_folder(exp_key: Optional[str] = None) -> str:
-    def _base_folder_name() -> str:
+    def _base_folder_name_and_is_single() -> Tuple[str, bool]:
         if exp_key:
-            return _slugify_plot_name(str(exp_key).replace('/', '__'))
+            return _slugify_plot_name(str(exp_key).replace('/', '__')), True
 
         selected_csv_map = globals().get('selected_csv_map', {})
         if isinstance(selected_csv_map, dict) and len(selected_csv_map) == 1:
-            return _slugify_plot_name(str(next(iter(selected_csv_map.keys()))).replace('/', '__'))
+            return _slugify_plot_name(str(next(iter(selected_csv_map.keys()))).replace('/', '__')), True
 
         loaded = globals().get('loaded_data', {})
         if isinstance(loaded, dict) and len(loaded) == 1:
-            return _slugify_plot_name(str(next(iter(loaded.keys()))).replace('/', '__'))
+            return _slugify_plot_name(str(next(iter(loaded.keys()))).replace('/', '__')), True
 
         if isinstance(loaded, dict) and loaded:
             multi_name = _multi_experiment_folder_name(loaded)
             if multi_name:
-                return _slugify_plot_name(multi_name)
+                return _slugify_plot_name(multi_name), False
         elif isinstance(selected_csv_map, dict) and selected_csv_map:
             multi_name = _multi_experiment_folder_name(selected_csv_map)
             if multi_name:
-                return _slugify_plot_name(multi_name)
+                return _slugify_plot_name(multi_name), False
 
-        return 'combined'
+        return 'combined', False
 
-    folder_name = _base_folder_name()
-    if bool(globals().get('SEPARATE_EXPERIMENT_DATA', True)):
+    folder_name, is_single = _base_folder_name_and_is_single()
+    # The "separated" prefix only makes sense when there's more than one
+    # experiment to keep apart; a single-experiment save stays unprefixed
+    # regardless of the SEPARATE_EXPERIMENT_DATA toggle.
+    if not is_single and bool(globals().get('SEPARATE_EXPERIMENT_DATA', True)):
         folder_name = f"separated_{folder_name}"
     return folder_name
 
@@ -528,6 +535,11 @@ class ExperimentPicker:
         if not self.fast_load_dropdown:
             return
         exp_key = self.fast_load_dropdown.value
+
+        with self.output:
+            self.output.clear_output()
+            print("Loading data...")
+
         bundle = _load_experiment_bundle(exp_key)
         if not bundle:
             with self.output:
@@ -1482,6 +1494,7 @@ def create_csv_picker_for_loaded_paths(picker, data_dir=None):
             experiment_labels = {}
             experiment_variant_prefixing = bool(SEPARATE_EXPERIMENT_DATA and len(exp_items) > 1)
             globals()['EXPERIMENT_VARIANT_PREFIXING'] = experiment_variant_prefixing
+            use_saved_data = bool(globals().get('USE_SAVED_DATA', True))
             cache_used_exps: List[str] = []
 
             for exp_index, (exp_key, base_paths_dict, probe_dirs) in enumerate(exp_items, start=1):
@@ -1489,25 +1502,25 @@ def create_csv_picker_for_loaded_paths(picker, data_dir=None):
                 selected_csv_map[exp_key] = sel
                 top_level_name = _top_level_experiment_name(exp_key)
 
-                # If the entire experiment (all its configs, or its single run
-                # folder) was selected, and a saved bundle already covers it,
-                # reuse the saved bundle instead of re-parsing every CSV.
-                full_exp_paths = set(_list_full_experiment_paths(data_dir, exp_key))
-                is_full_experiment = bool(full_exp_paths) and set(base_paths_dict.values()) == full_exp_paths
-
+                # If "Use saved data" is on, the entire experiment (all its configs,
+                # or its single run folder) was selected, and a saved bundle already
+                # covers it, reuse the saved bundle instead of re-parsing every CSV.
                 cached_bundle = None
-                if is_full_experiment:
-                    candidate_bundle = _load_experiment_bundle(exp_key)
-                    if candidate_bundle:
-                        expected_base_keys = {
-                            exp_key if p == (data_dir / exp_key) else f"{exp_key}/{p.name}"
-                            for p in full_exp_paths
-                        }
-                        covered_base_keys = {
-                            _strip_experiment_key_prefix(k) for k in candidate_bundle.get('loaded_data', {}).keys()
-                        }
-                        if expected_base_keys and expected_base_keys.issubset(covered_base_keys):
-                            cached_bundle = candidate_bundle
+                if use_saved_data:
+                    full_exp_paths = set(_list_full_experiment_paths(data_dir, exp_key))
+                    is_full_experiment = bool(full_exp_paths) and set(base_paths_dict.values()) == full_exp_paths
+                    if is_full_experiment:
+                        candidate_bundle = _load_experiment_bundle(exp_key)
+                        if candidate_bundle:
+                            expected_base_keys = {
+                                exp_key if p == (data_dir / exp_key) else f"{exp_key}/{p.name}"
+                                for p in full_exp_paths
+                            }
+                            covered_base_keys = {
+                                _strip_experiment_key_prefix(k) for k in candidate_bundle.get('loaded_data', {}).keys()
+                            }
+                            if expected_base_keys and expected_base_keys.issubset(covered_base_keys):
+                                cached_bundle = candidate_bundle
 
                 if cached_bundle is not None:
                     cache_used_exps.append(exp_key)
@@ -1640,7 +1653,7 @@ def create_csv_picker_for_loaded_paths(picker, data_dir=None):
                     print(f"  - {total_speeds:,} robot speeds")
                     print(f"  - {total_zone_logs:,} trap-zone logs")
                     if cache_used_exps:
-                        print(f"  - used cached data (from {SAVED_DIR}) for: {', '.join(cache_used_exps)}")
+                        print(f"  - used saved data (from {SAVED_DIR}) for: {', '.join(cache_used_exps)}")
                     save_btn.layout.display = 'block'
                 else:
                     print("❌ Error: No data was loaded. Please check your experiment selection and try again.")
@@ -2251,6 +2264,19 @@ def _compute_block_propagation_delay_rows(threshold=0.8):
     return rows
 
 
+def _dynamic_ylim_from_zero(plot_df, metric_column, fallback, pad_ratio=0.05):
+    """(0, max) y-limit sized to fit every value in `metric_column`, with a
+    small pad so nothing sits flush against the top axis edge (avoids clipping
+    the tallest boxplot's whisker/outlier). Falls back to `fallback` (a fixed
+    (min, max) tuple) when there's no usable data."""
+    if plot_df.empty or metric_column not in plot_df.columns:
+        return fallback
+    max_val = pd.to_numeric(plot_df[metric_column], errors='coerce').max()
+    if pd.isna(max_val) or max_val <= 0:
+        return fallback
+    return (0, float(max_val) * (1 + pad_ratio))
+
+
 def show_block_propagation_delay(threshold=0.8, title=None, xlabel='Number of Agents', ylabel='BPD [s]', save_path=None, dpi=None):
     """Compute and plot block propagation delay: time from creation until >= threshold fraction of agents observed the block.
 
@@ -2270,7 +2296,7 @@ def show_block_propagation_delay(threshold=0.8, title=None, xlabel='Number of Ag
         ylabel=ylabel,
         plot_title=title if title is not None else 'Block Propagation Delay (80% Observers)',
         comparison_title='Block Propagation Delay Comparison Across Consensus Algorithms',
-        ylim=(0, 1500),
+        ylim=_dynamic_ylim_from_zero(plot_df, 'block_propagation_delay_sec', (0, 1500)),
         no_data_message='No block propagation delay data found. Ensure observations and timestamps are present.',
         save_path=save_path,
         dpi=dpi,
@@ -2293,7 +2319,7 @@ def show_block_propagation_delay_combined(threshold=0.8, title=None, ylabel='BPD
         metric_column='block_propagation_delay_sec',
         ylabel=ylabel,
         plot_title=None,
-        ylim=(0, 1500),
+        ylim=_dynamic_ylim_from_zero(plot_df, 'block_propagation_delay_sec', (0, 1500)),
         no_data_message='No block propagation delay data found. Ensure observations and timestamps are present.',
         save_path=save_path,
         dpi=dpi,
@@ -2440,6 +2466,7 @@ def show_liveness_scatter(threshold=0.8, save_path=None, dpi=None, consensus_ord
                 'consensus': consensus,
                 'num_agents': num_agents,
                 'rep': rep_name,
+                'exp_key': exp_key,
                 'bi_sec': bi_sec,
                 'bpd_sec': bpd_sec,
             })
@@ -2459,21 +2486,31 @@ def show_liveness_scatter(threshold=0.8, save_path=None, dpi=None, consensus_ord
         consensus_types, base_order=consensus_order or ['C-PoA', 'R-PoA', 'PoA', 'PoW']
     )
 
-    # Dark line/marker/label color per base consensus, used for the line, dots,
-    # and labels; the translucent per-point IQR rectangle keeps the original,
-    # softer color_map shade.
-    line_color_overrides = {'PoW': '#0b5e0b'}
+    # PoW's default green reads too light for lines/markers/labels, so darken it
+    # for this plot only; the translucent per-point IQR rectangle still uses the
+    # original, softer color_map shade. Fade the same darker anchor across PoW's
+    # own experiment variants (same shade steps as _build_consensus_style) so it
+    # fades between experiments exactly like every other consensus protocol.
+    pow_variants = sorted(
+        (v for v in ordered_variants if _base_consensus_name(v) == 'PoW'),
+        key=_variant_sort_key,
+    )
+    pow_shade_steps = np.linspace(0.0, 0.45, len(pow_variants)) if len(pow_variants) > 1 else [0.0]
+    pow_line_colors = {
+        v: _mix_with_white('#0b5e0b', shade) for v, shade in zip(pow_variants, pow_shade_steps)
+    }
 
     fig, ax = plt.subplots(figsize=(14, 11))
 
     label_specs = []  # (x, y, text, color), placed after all points/lines are drawn
+    multi_experiment_labels = bool(globals().get('EXPERIMENT_VARIANT_PREFIXING', False))
 
-    for variant in ordered_variants:
+    for i, variant in enumerate(ordered_variants):
         sub = run_df[run_df['consensus'] == variant]
         if sub.empty:
             continue
         color = color_map[variant]
-        line_color = line_color_overrides.get(_base_consensus_name(variant), color)
+        line_color = pow_line_colors.get(variant, color)
 
         agent_counts = sorted(sub['num_agents'].unique())
         med_bi, med_bpd = [], []
@@ -2502,15 +2539,31 @@ def show_liveness_scatter(threshold=0.8, save_path=None, dpi=None, consensus_ord
             )
             ax.add_patch(rect)
 
+        # Each variant gets its own zorder "layer" (marker, then its own inside
+        # label just above it) so a later-drawn variant's marker sits above an
+        # earlier variant's marker+label entirely, letting it visually overwrite
+        # an earlier, overlapping point instead of the label always floating on
+        # top regardless of draw order.
+        variant_zorder = 3 + i
         ax.plot(
             med_bpd, med_bi,
             color=line_color, marker='o', markersize=21, linewidth=6,
             markeredgecolor='black', markeredgewidth=3.6,
-            label=variant, zorder=3,
+            label=_combined_variant_legend_label(variant, run_df), zorder=variant_zorder,
         )
 
-        for x, y, n_agents in zip(med_bpd, med_bi, agent_counts):
-            label_specs.append((x, y, str(n_agents), line_color))
+        if multi_experiment_labels:
+            # Draw the inside-marker number right after this point so a later,
+            # overlapping point (higher zorder) can paint over it.
+            for x, y, n_agents in zip(med_bpd, med_bi, agent_counts):
+                ax.annotate(
+                    str(n_agents), (x, y),
+                    ha='center', va='center',
+                    fontsize=11, color='black', fontweight='bold', zorder=variant_zorder + 0.5,
+                )
+        else:
+            for x, y, n_agents in zip(med_bpd, med_bi, agent_counts):
+                label_specs.append((x, y, str(n_agents), line_color))
 
     ax.set_xlabel('BPD [s]', fontsize=48, fontweight='bold')
     ax.set_ylabel('BI [s]', fontsize=48, fontweight='bold')
@@ -2528,42 +2581,47 @@ def show_liveness_scatter(threshold=0.8, save_path=None, dpi=None, consensus_ord
     )
     fig.tight_layout()
 
-    # Place the agent-count labels so they don't overlap each other: try a set of
-    # candidate offsets per label and keep the first one whose bounding box is
-    # clear of every label placed so far (checked in display/pixel coordinates).
-    fig.canvas.draw()
-    renderer = fig.canvas.get_renderer()
-    candidate_offsets = [
-        (20, 18), (20, -34), (-48, 18), (-48, -34),
-        (20, 48), (-48, 48), (20, -64), (-48, -64),
-    ]
-    placed_bboxes = []
-    for x, y, text, label_color in label_specs:
-        chosen_bbox = None
-        chosen_ann = None
-        for dx, dy in candidate_offsets:
-            ann = ax.annotate(
-                text, (x, y),
-                textcoords="offset points", xytext=(dx, dy),
-                fontsize=26, color=label_color, fontweight='bold', zorder=5,
-                bbox=dict(boxstyle='round,pad=0.12', fc='white', ec='none', alpha=0.75),
-            )
-            bbox = ann.get_window_extent(renderer)
-            if not any(bbox.overlaps(other) for other in placed_bboxes):
-                chosen_bbox = bbox
-                chosen_ann = ann
-                break
-            ann.remove()
-        if chosen_ann is None:
-            # No collision-free spot found; fall back to the default offset.
-            chosen_ann = ax.annotate(
-                text, (x, y),
-                textcoords="offset points", xytext=candidate_offsets[0],
-                fontsize=26, color=label_color, fontweight='bold', zorder=5,
-                bbox=dict(boxstyle='round,pad=0.12', fc='white', ec='none', alpha=0.75),
-            )
-            chosen_bbox = chosen_ann.get_window_extent(renderer)
-        placed_bboxes.append(chosen_bbox)
+    # Multi-experiment inside-marker labels are already drawn per-variant above
+    # (see multi_experiment_labels), interleaved with each point so later,
+    # overlapping points can paint over earlier ones. Only the offset-label path
+    # (single/merged-experiment) still has deferred labels to place here.
+    if not multi_experiment_labels:
+        # Place the agent-count labels so they don't overlap each other: try a set
+        # of candidate offsets per label and keep the first one whose bounding box
+        # is clear of every label placed so far (checked in display/pixel coords).
+        fig.canvas.draw()
+        renderer = fig.canvas.get_renderer()
+        candidate_offsets = [
+            (20, 18), (20, -34), (-48, 18), (-48, -34),
+            (20, 48), (-48, 48), (20, -64), (-48, -64),
+        ]
+        placed_bboxes = []
+        for x, y, text, label_color in label_specs:
+            chosen_bbox = None
+            chosen_ann = None
+            for dx, dy in candidate_offsets:
+                ann = ax.annotate(
+                    text, (x, y),
+                    textcoords="offset points", xytext=(dx, dy),
+                    fontsize=26, color=label_color, fontweight='bold', zorder=5,
+                    bbox=dict(boxstyle='round,pad=0.12', fc='white', ec='none', alpha=0.75),
+                )
+                bbox = ann.get_window_extent(renderer)
+                if not any(bbox.overlaps(other) for other in placed_bboxes):
+                    chosen_bbox = bbox
+                    chosen_ann = ann
+                    break
+                ann.remove()
+            if chosen_ann is None:
+                # No collision-free spot found; fall back to the default offset.
+                chosen_ann = ax.annotate(
+                    text, (x, y),
+                    textcoords="offset points", xytext=candidate_offsets[0],
+                    fontsize=26, color=label_color, fontweight='bold', zorder=5,
+                    bbox=dict(boxstyle='round,pad=0.12', fc='white', ec='none', alpha=0.75),
+                )
+                chosen_bbox = chosen_ann.get_window_extent(renderer)
+            placed_bboxes.append(chosen_bbox)
 
     _save_plot_if_needed(fig, plot_name='liveness', exp_key=None, save_path=save_path, dpi=dpi)
     plt.show()
@@ -2833,7 +2891,6 @@ def show_block_interval_mean_overview(title=None, xlabel='Number of Agents', yla
         return
 
     plot_df = pd.DataFrame(rows)
-    bi_ylim = (0.0, 38.0)
 
     _create_consensus_boxplot_visualization(
         plot_df=plot_df,
@@ -2841,7 +2898,7 @@ def show_block_interval_mean_overview(title=None, xlabel='Number of Agents', yla
         ylabel=ylabel,
         plot_title=title if title is not None else 'Mean BI by Consensus Across Agent Counts',
         comparison_title='Mean BI Comparison Across Consensus Algorithms',
-        ylim=bi_ylim,
+        ylim=_dynamic_ylim_from_zero(plot_df, 'mean_bi_sec', (0.0, 38.0)),
         no_data_message='No valid BI data found for overview plot.',
         save_path=save_path,
         dpi=dpi,
@@ -2862,14 +2919,13 @@ def show_block_interval_mean_overview_combined(title=None, ylabel='BI [s]', save
         return
 
     plot_df = pd.DataFrame(rows)
-    bi_ylim = (0.0, 38.0)
 
     _create_combined_consensus_boxplot(
         plot_df=plot_df,
         metric_column='mean_bi_sec',
         ylabel=ylabel,
         plot_title=None,
-        ylim=bi_ylim,
+        ylim=_dynamic_ylim_from_zero(plot_df, 'mean_bi_sec', (0.0, 38.0)),
         no_data_message='No valid BI data found for overview plot.',
         save_path=save_path,
         dpi=dpi,
@@ -3336,6 +3392,8 @@ def _create_combined_consensus_boxplot(
     box_width_scale: float = COMBINED_BOXPLOT_BOX_WIDTH_SCALE,
     group_gap_scale: float = COMBINED_BOXPLOT_GROUP_GAP_SCALE,
     legend_position: str = 'right',
+    apply_experiment_merge: bool = True,
+    legend_label_fn: Optional[Callable[[str, pd.DataFrame], str]] = None,
 ):
     """Single-panel boxplot with one x-position per agent count, holding one box
     per consensus variant side-by-side (all consensus protocols on one axes).
@@ -3351,12 +3409,18 @@ def _create_combined_consensus_boxplot(
         legend_position: 'right' (default) draws the consensus legend outside
             the axes on the right, stacked vertically. 'top' draws it above
             the axes instead, as a single horizontal row.
+        apply_experiment_merge: when True (default), merges "N#" prefixed
+            consensus variants back into one bucket if SEPARATE_EXPERIMENT_DATA
+            is off. Set False when the "N#" prefix encodes something other than
+            an experiment (e.g. a trap/free partition) that must never merge.
+        legend_label_fn: optional (variant, plot_df) -> str callable overriding
+            the default 'S<experiment#> <base>' legend label.
     """
     if plot_df.empty:
         print(no_data_message)
         return
 
-    if not bool(globals().get('SEPARATE_EXPERIMENT_DATA', True)) and 'consensus' in plot_df.columns:
+    if apply_experiment_merge and not bool(globals().get('SEPARATE_EXPERIMENT_DATA', True)) and 'consensus' in plot_df.columns:
         merged_df = plot_df.copy()
         merged_df['consensus'] = merged_df['consensus'].astype(str).str.replace(r'^\d+#\s*', '', regex=True)
         plot_df = merged_df
@@ -3485,8 +3549,9 @@ def _create_combined_consensus_boxplot(
     if ylim_to_use is not None:
         ax_box.set_ylim(ylim_to_use)
 
+    label_fn = legend_label_fn or _combined_variant_legend_label
     legend_handles = [
-        Patch(facecolor=color_map[variant], alpha=0.78, label=_combined_variant_legend_label(variant, plot_df))
+        Patch(facecolor=color_map[variant], alpha=0.78, label=label_fn(variant, plot_df))
         for variant in ordered_variants
     ]
     if legend_position == 'top':
@@ -3523,6 +3588,61 @@ def _create_combined_consensus_boxplot(
     print(f"\nSummary Statistics ({ylabel}):")
     summary = plot_df.groupby(['consensus', 'num_agents'])[metric_column].agg(['count', 'mean', 'median', 'std', 'min', 'max'])
     print(summary.to_string())
+
+
+def show_consensus_legend(save_path=None, dpi=None, consensus_order=None, font_scale=COMBINED_BOXPLOT_FONT_SCALE):
+    """Standalone horizontal legend (no axes/plot) showing each consensus
+    variant's color and label, in the same style and 'S<experiment number>
+    <protocol>' notation as the combined boxplots' legends (e.g. 'S1 PoA',
+    'S4 PoA'). Handy as a single shared legend when combining multiple
+    exported plot images."""
+    if 'loaded_data' not in globals() or not globals().get('loaded_data'):
+        print("No `loaded_data` available. Use the picker and click Load data first.")
+        return
+
+    loaded_data = globals().get('loaded_data', {})
+    rows = []
+    for exp_key in sorted(loaded_data.keys()):
+        consensus, num_agents = _extract_config_info(exp_key)
+        if consensus is None or num_agents is None:
+            continue
+        rows.append({'consensus': consensus, 'exp_key': exp_key})
+
+    if not rows:
+        print("No consensus/experiment data found.")
+        return
+
+    plot_df = pd.DataFrame(rows)
+    if not bool(globals().get('SEPARATE_EXPERIMENT_DATA', True)):
+        plot_df = plot_df.copy()
+        plot_df['consensus'] = plot_df['consensus'].astype(str).str.replace(r'^\d+#\s*', '', regex=True)
+
+    consensus_types = sorted(plot_df['consensus'].unique())
+    color_map, _, _, ordered_variants = _build_consensus_style(
+        consensus_types, base_order=consensus_order or ['C-PoA', 'R-PoA', 'PoA', 'PoW']
+    )
+
+    legend_handles = [
+        Patch(facecolor=color_map[variant], alpha=0.78, label=_combined_variant_legend_label(variant, plot_df))
+        for variant in ordered_variants
+    ]
+
+    fig = plt.figure(figsize=(2.6 * len(legend_handles) * font_scale, 1.3 * font_scale))
+    legend = fig.legend(
+        handles=legend_handles,
+        loc='center',
+        ncol=len(legend_handles),
+        fontsize=30 * font_scale,
+        handlelength=3,
+        handleheight=2,
+        borderpad=0.8,
+        columnspacing=1.5,
+    )
+    legend.get_frame().set_linewidth(2.5)
+
+    _save_plot_if_needed(fig, plot_name='legend', exp_key=None, save_path=save_path, dpi=dpi)
+    plt.show()
+    plt.close(fig)
 
 
 def _compute_total_produced_blocks_rows():
@@ -3593,6 +3713,15 @@ def show_total_produced_blocks_boxplot_combined(save_path=None, dpi=None, consen
 
     plot_df = pd.DataFrame(_compute_total_produced_blocks_rows())
 
+    # The S4/S2/S1/S3 reorder only makes sense (and was only requested) for
+    # more than two experiments at once; with 2 or fewer, keep the default
+    # ascending experiment order like every other combined plot.
+    num_experiments = (
+        plot_df['exp_key'].dropna().astype(str).map(_top_level_experiment_name).nunique()
+        if 'exp_key' in plot_df.columns else 0
+    )
+    experiment_order = [4, 2, 1, 3] if num_experiments > 2 else None
+
     _create_combined_consensus_boxplot(
         plot_df=plot_df,
         metric_column='total_blocks_produced',
@@ -3603,8 +3732,231 @@ def show_total_produced_blocks_boxplot_combined(save_path=None, dpi=None, consen
         dpi=dpi,
         plot_name='TPB',
         consensus_order=consensus_order or ['C-PoA', 'R-PoA', 'PoA', 'PoW'],
-        experiment_order=[4, 2, 1, 3],
+        experiment_order=experiment_order,
     )
+
+
+def _classify_block_partition_by_hash(exp_key, rep_name, block_hashes, loaded_data, loaded_zones):
+    """For one run, classify each of `block_hashes` as produced while its
+    producer was inside the trap zone (True) or outside it (False).
+
+    The producer and creation time for each hash come from the earliest row
+    for that hash across all robots' own block.csv chain views (MINER,
+    TIMESTAMP). block.csv TIMESTAMP is in ticks (10 ticks = 1 second, the same
+    convention used for BI); zone.csv TIME is already in seconds.
+
+    Returns a dict block_hash -> bool (True = inside trap), containing only
+    the hashes whose producer and creation time could be resolved.
+    """
+    def _parse_producer_id(miner_val):
+        if pd.isna(miner_val):
+            return None
+        s = str(miner_val)
+        if s.isdigit():
+            return int(s)
+        if s.startswith('enode://') and '@' in s:
+            token = s.split('enode://', 1)[1].split('@', 1)[0]
+            if token.isdigit():
+                return int(token)
+            return token
+        return s
+
+    robots_dict = loaded_data.get(exp_key, {}).get(rep_name, {})
+    chain_frames = [df for df in robots_dict.values() if isinstance(df, pd.DataFrame) and not df.empty]
+    if not chain_frames:
+        return {}
+
+    combined_chain = pd.concat(chain_frames, ignore_index=True)
+    if not {'HASH', 'TIMESTAMP', 'MINER'}.issubset(combined_chain.columns):
+        return {}
+
+    combined_chain = combined_chain.dropna(subset=['HASH']).copy()
+    combined_chain['HASH'] = combined_chain['HASH'].astype(str)
+    combined_chain['_ts'] = pd.to_numeric(combined_chain['TIMESTAMP'], errors='coerce')
+    combined_chain = combined_chain.dropna(subset=['_ts']).sort_values('_ts')
+    first_seen = combined_chain.drop_duplicates(subset='HASH', keep='first')
+    creation_by_hash = dict(zip(first_seen['HASH'], first_seen['_ts']))
+    miner_by_hash = dict(zip(first_seen['HASH'], first_seen['MINER']))
+
+    zone_by_robot = loaded_zones.get(exp_key, {}).get(rep_name, {})
+
+    partition_by_hash = {}
+    for block_hash in block_hashes:
+        block_hash = str(block_hash)
+        ts_ticks = creation_by_hash.get(block_hash)
+        miner_val = miner_by_hash.get(block_hash)
+        if ts_ticks is None or pd.isna(ts_ticks) or miner_val is None:
+            continue
+        producer_id = _parse_producer_id(miner_val)
+        if producer_id is None:
+            continue
+
+        ts_seconds = float(ts_ticks) / 10.0
+        zone_df = zone_by_robot.get(producer_id)
+        partition_by_hash[block_hash] = _is_robot_trapped_at_time(zone_df, ts_seconds)
+
+    return partition_by_hash
+
+
+def _compute_tpb_by_partition_rows():
+    """Per-run block-production rows split by whether the producing robot was
+    inside the trap zone or outside it at the block's creation time.
+
+    Blocks whose producer or creation time can't be resolved are excluded from
+    the split. Runs with no trap-zone data loaded simply count every block as
+    outside the trap.
+    """
+    loaded_data = globals().get('loaded_data', {})
+    loaded_blocks = globals().get('loaded_blocks', {})
+    loaded_zones = globals().get('loaded_zones', {})
+    exp_choices = sorted(loaded_blocks.keys())
+
+    rows = []
+    for exp_key in exp_choices:
+        consensus, num_agents = _extract_config_info(exp_key)
+        if consensus is None or num_agents is None:
+            continue
+
+        for rep_name, blocks_dict in loaded_blocks.get(exp_key, {}).items():
+            if not isinstance(blocks_dict, dict) or not blocks_dict:
+                continue
+
+            partition_by_hash = _classify_block_partition_by_hash(
+                exp_key, rep_name, blocks_dict.keys(), loaded_data, loaded_zones
+            )
+            if not partition_by_hash:
+                continue
+
+            trapped_count = sum(1 for trapped in partition_by_hash.values() if trapped)
+            free_count = sum(1 for trapped in partition_by_hash.values() if not trapped)
+
+            rows.append({
+                'consensus': consensus,
+                'num_agents': num_agents,
+                'rep': rep_name,
+                'exp_key': exp_key,
+                'free_blocks': free_count,
+                'trapped_blocks': trapped_count,
+            })
+
+    return rows
+
+
+def show_tpb_by_partition_bar(save_path=None, dpi=None, consensus_order=None):
+    """Bar chart of average Total Produced Blocks (TPB) per run, split into the
+    share produced while the producing robot was outside the trap zone (base
+    color, lower segment) vs inside it (lighter shade, upper segment). One bar
+    per consensus variant, grouped by swarm size, using the same grouping and
+    coloring style as the combined boxplots.
+
+    Requires block.csv, block observation JSON, and zone.csv to all be loaded;
+    without zone.csv, every block is counted as outside the trap.
+    """
+    if 'loaded_data' not in globals() or not globals().get('loaded_data'):
+        print("No `loaded_data` available. Use the picker and click Load data first.")
+        return
+    if 'loaded_blocks' not in globals() or not globals().get('loaded_blocks'):
+        print("No `loaded_blocks` available. Use the picker and click Load data first.")
+        return
+    if not globals().get('loaded_zones'):
+        print("Note: no `loaded_zones` (zone.csv) data loaded — every block will show as outside the trap.")
+
+    plot_df = pd.DataFrame(_compute_tpb_by_partition_rows())
+    if plot_df.empty:
+        print("No trap-partition block data found. Ensure block.csv MINER/TIMESTAMP columns and block observation JSON are present.")
+        return
+
+    if not bool(globals().get('SEPARATE_EXPERIMENT_DATA', True)) and 'consensus' in plot_df.columns:
+        merged_df = plot_df.copy()
+        merged_df['consensus'] = merged_df['consensus'].astype(str).str.replace(r'^\d+#\s*', '', regex=True)
+        plot_df = merged_df
+
+    consensus_types = sorted(plot_df['consensus'].unique())
+    agent_counts = sorted(plot_df['num_agents'].unique())
+    color_map, _, _, ordered_variants = _build_consensus_style(
+        consensus_types, base_order=consensus_order or ['C-PoA', 'R-PoA', 'PoA', 'PoW']
+    )
+
+    font_scale = COMBINED_BOXPLOT_FONT_SCALE
+    box_width_scale = COMBINED_BOXPLOT_BOX_WIDTH_SCALE
+    group_gap_scale = COMBINED_BOXPLOT_GROUP_GAP_SCALE
+    legend_width_fraction = COMBINED_BOXPLOT_LEGEND_WIDTH_FRACTION
+
+    n_variants = max(1, len(ordered_variants))
+    layout_scale = (box_width_scale + group_gap_scale) / 2.0
+    plot_width = max(13, 1.5 * n_variants * len(agent_counts) * layout_scale) * font_scale
+    fig, ax = plt.subplots(figsize=(plot_width / (1 - legend_width_fraction), 10.5 * font_scale))
+
+    bar_width = (0.45 / n_variants) * box_width_scale
+    group_width = bar_width * n_variants
+    group_gap = 0.25 * group_gap_scale
+
+    group_starts = []
+    current_position = 0.0
+    for _ in agent_counts:
+        group_starts.append(current_position)
+        current_position += group_width + group_gap
+
+    all_positions, all_variants, all_free, all_trapped = [], [], [], []
+    for group_start, n_agents in zip(group_starts, agent_counts):
+        for v_idx, variant in enumerate(ordered_variants):
+            subset = plot_df[(plot_df['num_agents'] == n_agents) & (plot_df['consensus'] == variant)]
+            if subset.empty:
+                continue
+            all_positions.append(group_start + v_idx * bar_width)
+            all_variants.append(variant)
+            all_free.append(float(subset['free_blocks'].mean()))
+            all_trapped.append(float(subset['trapped_blocks'].mean()))
+
+    if all_positions:
+        for pos, variant, free_val, trapped_val in zip(all_positions, all_variants, all_free, all_trapped):
+            base_color = color_map[variant]
+            light_color = _mix_with_white(base_color, 0.55)
+            ax.bar(pos, free_val, width=bar_width * 0.9, color=base_color, edgecolor='black', linewidth=2.5, zorder=3)
+            ax.bar(pos, trapped_val, width=bar_width * 0.9, bottom=free_val, color=light_color, edgecolor='black', linewidth=2.5, zorder=3)
+
+        group_centers = [start + (group_width - bar_width) / 2 for start in group_starts]
+        ax.set_xticks(group_centers)
+        ax.set_xticklabels([str(n) for n in agent_counts], fontsize=36 * font_scale)
+        ax.set_xlim(min(all_positions) - bar_width, max(all_positions) + bar_width)
+    else:
+        ax.text(0.5, 0.5, 'No data', ha='center', va='center', transform=ax.transAxes, fontsize=20 * font_scale)
+
+    ax.set_xlabel('Number of Agents', fontsize=36 * font_scale, fontweight='bold')
+    ax.set_ylabel('TPB', fontsize=36 * font_scale, fontweight='bold')
+    ax.grid(axis='y', linestyle='--', alpha=0.3, color='black', linewidth=COMBINED_BOXPLOT_FRAME_LINEWIDTH)
+    ax.set_axisbelow(True)
+    for spine in ax.spines.values():
+        spine.set_color('black')
+        spine.set_linewidth(COMBINED_BOXPLOT_FRAME_LINEWIDTH)
+    ax.tick_params(axis='both', which='major', labelsize=36 * font_scale)
+
+    legend_handles = [
+        Patch(facecolor=color_map[variant], alpha=0.78, label=_combined_variant_legend_label(variant, plot_df))
+        for variant in ordered_variants
+    ]
+    legend_handles += [
+        Patch(facecolor='dimgray', edgecolor='black', label='Outside trap'),
+        Patch(facecolor='lightgray', edgecolor='black', label='Inside trap'),
+    ]
+    legend = ax.legend(
+        handles=legend_handles,
+        loc='center left',
+        bbox_to_anchor=(1.02, 0.5),
+        borderaxespad=0.0,
+        fontsize=26 * font_scale,
+    )
+    legend.get_frame().set_linewidth(2.5)
+
+    fig.tight_layout(rect=(0, 0, 1 - legend_width_fraction, 1))
+    _save_plot_if_needed(fig, plot_name='TPB_by_partition', exp_key=None, save_path=save_path, dpi=dpi)
+    plt.show()
+    plt.close(fig)
+
+    print("\nAverage blocks produced per run (outside trap / inside trap) by consensus and agent count:")
+    summary = plot_df.groupby(['consensus', 'num_agents'])[['free_blocks', 'trapped_blocks']].mean()
+    summary['total'] = summary['free_blocks'] + summary['trapped_blocks']
+    print(summary.to_string())
 
 
 def _compute_agent_speed_rows():
@@ -4660,7 +5012,7 @@ def show_trap_residence_time_boxplot_combined(save_path=None, dpi=None, consensu
     _create_combined_consensus_boxplot(
         plot_df=plot_df,
         metric_column='trap_residence_pct',
-        ylabel='Trap residence time (%)',
+        ylabel='TRT [%]',
         plot_title=None,#'Trap Residence Time (TRT)',
         ylim=(0, 100),
         no_data_message='No trap residence data found. Ensure zone.csv files with ENTER/EXIT events are loaded.',
@@ -4790,12 +5142,18 @@ def show_interpartition_contact_frequency_boxplot_combined(save_path=None, dpi=N
 
     plot_df = pd.DataFrame(_compute_icf_rows())
 
+    max_val = (
+        pd.to_numeric(plot_df['inter_partition_contact_pct'], errors='coerce').max()
+        if not plot_df.empty and 'inter_partition_contact_pct' in plot_df.columns else None
+    )
+    ylim = (0, float(max_val)) if pd.notna(max_val) else (0, 100)
+
     _create_combined_consensus_boxplot(
         plot_df=plot_df,
         metric_column='inter_partition_contact_pct',
         ylabel='ICF [%]',
         plot_title=None,#'Inter-partition Contact Frequency (ICF)',
-        ylim=(0, 100),
+        ylim=ylim,
         no_data_message='No peer-contact data found. Ensure monitor.log contains "Robot X added peer Y at T" lines.',
         save_path=save_path,
         dpi=dpi,
