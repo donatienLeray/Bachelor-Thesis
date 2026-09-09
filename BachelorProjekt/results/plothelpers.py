@@ -834,12 +834,21 @@ def _add_experiment_legend(fig, exp_keys: List[str], *, existing_handles=None, e
 
 
 def _get_consensus_agent_groups(exp_choices: List[str]) -> Dict[Tuple[str, str], List[str]]:
-    """Group experiment keys by (consensus, num_agents_as_str)."""
+    """Group experiment keys by (consensus, num_agents_as_str).
+
+    When SEPARATE_EXPERIMENT_DATA is off, the 'N#' experiment-index prefix is
+    stripped from the consensus name before grouping, so keys loaded under
+    different experiments (e.g. '1#PoA_5' and '2#PoA_5') merge into the same
+    group and get aggregated together, matching how the combined boxplots
+    already respect this toggle live (not just at load time)."""
+    merge_experiments = not bool(globals().get('SEPARATE_EXPERIMENT_DATA', True))
     groups: Dict[Tuple[str, str], List[str]] = {}
     for exp_key in exp_choices:
         consensus, num_agents = _extract_config_info(exp_key)
         if consensus is None or num_agents is None:
             continue
+        if merge_experiments:
+            consensus = re.sub(r'^\d+#\s*', '', str(consensus))
         key = (consensus, str(num_agents))
         groups.setdefault(key, []).append(exp_key)
     return groups
@@ -2296,7 +2305,7 @@ def show_block_propagation_delay(threshold=0.8, title=None, xlabel='Number of Ag
         ylabel=ylabel,
         plot_title=title if title is not None else 'Block Propagation Delay (80% Observers)',
         comparison_title='Block Propagation Delay Comparison Across Consensus Algorithms',
-        ylim=_dynamic_ylim_from_zero(plot_df, 'block_propagation_delay_sec', (0, 1500)),
+        ylim=(0, 1500),
         no_data_message='No block propagation delay data found. Ensure observations and timestamps are present.',
         save_path=save_path,
         dpi=dpi,
@@ -2319,7 +2328,7 @@ def show_block_propagation_delay_combined(threshold=0.8, title=None, ylabel='BPD
         metric_column='block_propagation_delay_sec',
         ylabel=ylabel,
         plot_title=None,
-        ylim=_dynamic_ylim_from_zero(plot_df, 'block_propagation_delay_sec', (0, 1500)),
+        ylim=(0, 1500),
         no_data_message='No block propagation delay data found. Ensure observations and timestamps are present.',
         save_path=save_path,
         dpi=dpi,
@@ -3736,64 +3745,59 @@ def show_total_produced_blocks_boxplot_combined(save_path=None, dpi=None, consen
     )
 
 
-def _classify_block_partition_by_hash(exp_key, rep_name, block_hashes, loaded_data, loaded_zones):
-    """For one run, classify each of `block_hashes` as produced while its
-    producer was inside the trap zone (True) or outside it (False).
+def _classify_block_partition_by_hash(exp_key, rep_name, blocks_dict, loaded_zones):
+    """For one run, classify each block in `blocks_dict` (block_hash ->
+    observations DataFrame, i.e. `loaded_blocks[exp_key][rep_name]`) as
+    produced while its producer was inside the trap zone (True) or outside it
+    (False).
 
-    The producer and creation time for each hash come from the earliest row
-    for that hash across all robots' own block.csv chain views (MINER,
-    TIMESTAMP). block.csv TIMESTAMP is in ticks (10 ticks = 1 second, the same
-    convention used for BI); zone.csv TIME is already in seconds.
+    The producer and creation time come from each block's own 'local'-source
+    observation row: a block's producer robot observes it "locally" (as
+    opposed to 'sync'/receiving it from a peer) at the moment it creates it,
+    so that row's observer_id is the producer and received_at is the creation
+    time. Falls back to the earliest observation of any source if no 'local'
+    row exists for a hash. received_at is in ticks (10 ticks = 1 second, the
+    same convention used for BI); zone.csv TIME is already in seconds.
+
+    Using each block's own observation records (rather than looking it up in
+    some robot's retained block.csv chain) means every block that was ever
+    observed gets classified — including forks/orphans a robot's own chain
+    never kept — matching the same block set TPB counts.
 
     Returns a dict block_hash -> bool (True = inside trap), containing only
     the hashes whose producer and creation time could be resolved.
     """
-    def _parse_producer_id(miner_val):
-        if pd.isna(miner_val):
-            return None
-        s = str(miner_val)
-        if s.isdigit():
-            return int(s)
-        if s.startswith('enode://') and '@' in s:
-            token = s.split('enode://', 1)[1].split('@', 1)[0]
-            if token.isdigit():
-                return int(token)
-            return token
-        return s
-
-    robots_dict = loaded_data.get(exp_key, {}).get(rep_name, {})
-    chain_frames = [df for df in robots_dict.values() if isinstance(df, pd.DataFrame) and not df.empty]
-    if not chain_frames:
-        return {}
-
-    combined_chain = pd.concat(chain_frames, ignore_index=True)
-    if not {'HASH', 'TIMESTAMP', 'MINER'}.issubset(combined_chain.columns):
-        return {}
-
-    combined_chain = combined_chain.dropna(subset=['HASH']).copy()
-    combined_chain['HASH'] = combined_chain['HASH'].astype(str)
-    combined_chain['_ts'] = pd.to_numeric(combined_chain['TIMESTAMP'], errors='coerce')
-    combined_chain = combined_chain.dropna(subset=['_ts']).sort_values('_ts')
-    first_seen = combined_chain.drop_duplicates(subset='HASH', keep='first')
-    creation_by_hash = dict(zip(first_seen['HASH'], first_seen['_ts']))
-    miner_by_hash = dict(zip(first_seen['HASH'], first_seen['MINER']))
-
     zone_by_robot = loaded_zones.get(exp_key, {}).get(rep_name, {})
+    ts_candidates = ['received_at', 'received', 'timestamp', 'observed_at', 'observed', 'time']
 
     partition_by_hash = {}
-    for block_hash in block_hashes:
-        block_hash = str(block_hash)
-        ts_ticks = creation_by_hash.get(block_hash)
-        miner_val = miner_by_hash.get(block_hash)
-        if ts_ticks is None or pd.isna(ts_ticks) or miner_val is None:
+    for block_hash, obs_df in blocks_dict.items():
+        if not isinstance(obs_df, pd.DataFrame) or obs_df.empty:
             continue
-        producer_id = _parse_producer_id(miner_val)
-        if producer_id is None:
+        if 'observer_id' not in obs_df.columns:
             continue
 
-        ts_seconds = float(ts_ticks) / 10.0
+        ts_col = next((c for c in ts_candidates if c in obs_df.columns), None)
+        if ts_col is None:
+            continue
+
+        df = obs_df.copy()
+        df['_ts'] = pd.to_numeric(df[ts_col], errors='coerce')
+        df = df.dropna(subset=['_ts'])
+        if df.empty:
+            continue
+
+        local_rows = df[df['source'].astype(str).str.lower() == 'local'] if 'source' in df.columns else df.iloc[0:0]
+        producer_row = (local_rows if not local_rows.empty else df).sort_values('_ts').iloc[0]
+
+        try:
+            producer_id = int(str(producer_row['observer_id']))
+        except (TypeError, ValueError):
+            producer_id = producer_row['observer_id']
+
+        ts_seconds = float(producer_row['_ts']) / 10.0
         zone_df = zone_by_robot.get(producer_id)
-        partition_by_hash[block_hash] = _is_robot_trapped_at_time(zone_df, ts_seconds)
+        partition_by_hash[str(block_hash)] = _is_robot_trapped_at_time(zone_df, ts_seconds)
 
     return partition_by_hash
 
@@ -3806,7 +3810,6 @@ def _compute_tpb_by_partition_rows():
     the split. Runs with no trap-zone data loaded simply count every block as
     outside the trap.
     """
-    loaded_data = globals().get('loaded_data', {})
     loaded_blocks = globals().get('loaded_blocks', {})
     loaded_zones = globals().get('loaded_zones', {})
     exp_choices = sorted(loaded_blocks.keys())
@@ -3821,9 +3824,7 @@ def _compute_tpb_by_partition_rows():
             if not isinstance(blocks_dict, dict) or not blocks_dict:
                 continue
 
-            partition_by_hash = _classify_block_partition_by_hash(
-                exp_key, rep_name, blocks_dict.keys(), loaded_data, loaded_zones
-            )
+            partition_by_hash = _classify_block_partition_by_hash(exp_key, rep_name, blocks_dict, loaded_zones)
             if not partition_by_hash:
                 continue
 
@@ -3849,12 +3850,17 @@ def show_tpb_by_partition_bar(save_path=None, dpi=None, consensus_order=None):
     per consensus variant, grouped by swarm size, using the same grouping and
     coloring style as the combined boxplots.
 
-    Requires block.csv, block observation JSON, and zone.csv to all be loaded;
-    without zone.csv, every block is counted as outside the trap.
+    Each bar also gets a dashed black line marking the free/trapped cutoff
+    expected from TRT if blocks were produced at a uniform rate regardless of
+    trap status: expected_free = (1 - TRT%) * total_blocks (e.g. TRT=20% and
+    25 blocks -> expected cutoff at 20). Comparing the actual bar boundary to
+    this line shows whether trapped robots under- or over-produce relative to
+    the time they spend trapped.
+
+    Requires block observation JSON and zone.csv to be loaded; without
+    zone.csv, every block is counted as outside the trap and no cutoff line is
+    drawn (TRT itself would be 0%).
     """
-    if 'loaded_data' not in globals() or not globals().get('loaded_data'):
-        print("No `loaded_data` available. Use the picker and click Load data first.")
-        return
     if 'loaded_blocks' not in globals() or not globals().get('loaded_blocks'):
         print("No `loaded_blocks` available. Use the picker and click Load data first.")
         return
@@ -3863,13 +3869,27 @@ def show_tpb_by_partition_bar(save_path=None, dpi=None, consensus_order=None):
 
     plot_df = pd.DataFrame(_compute_tpb_by_partition_rows())
     if plot_df.empty:
-        print("No trap-partition block data found. Ensure block.csv MINER/TIMESTAMP columns and block observation JSON are present.")
+        print("No trap-partition block data found. Ensure block observation JSON (with 'source'/'observer_id'/'received_at') is loaded.")
         return
 
     if not bool(globals().get('SEPARATE_EXPERIMENT_DATA', True)) and 'consensus' in plot_df.columns:
         merged_df = plot_df.copy()
         merged_df['consensus'] = merged_df['consensus'].astype(str).str.replace(r'^\d+#\s*', '', regex=True)
         plot_df = merged_df
+
+    # Expected free/trapped cutoff from TRT: if blocks were produced at a
+    # uniform rate regardless of trap status, the fraction produced while
+    # trapped should equal the fraction of swarm-time spent trapped (TRT%).
+    # e.g. TRT=20% and 25 blocks produced -> expect (100-20)%*25=20 free
+    # blocks below the cutoff and 20%*25=5 trapped blocks above it.
+    trt_lookup = {}
+    trt_rows = _compute_trap_residence_rows() if globals().get('loaded_zones') else []
+    if trt_rows:
+        trt_df = pd.DataFrame(trt_rows)
+        if not bool(globals().get('SEPARATE_EXPERIMENT_DATA', True)) and 'consensus' in trt_df.columns:
+            trt_df = trt_df.copy()
+            trt_df['consensus'] = trt_df['consensus'].astype(str).str.replace(r'^\d+#\s*', '', regex=True)
+        trt_lookup = trt_df.groupby(['consensus', 'num_agents'])['trap_residence_pct'].mean().to_dict()
 
     consensus_types = sorted(plot_df['consensus'].unique())
     agent_counts = sorted(plot_df['num_agents'].unique())
@@ -3887,7 +3907,7 @@ def show_tpb_by_partition_bar(save_path=None, dpi=None, consensus_order=None):
     plot_width = max(13, 1.5 * n_variants * len(agent_counts) * layout_scale) * font_scale
     fig, ax = plt.subplots(figsize=(plot_width / (1 - legend_width_fraction), 10.5 * font_scale))
 
-    bar_width = (0.45 / n_variants) * box_width_scale
+    bar_width = (0.45 / n_variants) * box_width_scale * 4.0
     group_width = bar_width * n_variants
     group_gap = 0.25 * group_gap_scale
 
@@ -3897,7 +3917,7 @@ def show_tpb_by_partition_bar(save_path=None, dpi=None, consensus_order=None):
         group_starts.append(current_position)
         current_position += group_width + group_gap
 
-    all_positions, all_variants, all_free, all_trapped = [], [], [], []
+    all_positions, all_variants, all_agents, all_free, all_trapped = [], [], [], [], []
     for group_start, n_agents in zip(group_starts, agent_counts):
         for v_idx, variant in enumerate(ordered_variants):
             subset = plot_df[(plot_df['num_agents'] == n_agents) & (plot_df['consensus'] == variant)]
@@ -3905,15 +3925,28 @@ def show_tpb_by_partition_bar(save_path=None, dpi=None, consensus_order=None):
                 continue
             all_positions.append(group_start + v_idx * bar_width)
             all_variants.append(variant)
+            all_agents.append(n_agents)
             all_free.append(float(subset['free_blocks'].mean()))
             all_trapped.append(float(subset['trapped_blocks'].mean()))
 
+    has_cutoff_line = False
     if all_positions:
-        for pos, variant, free_val, trapped_val in zip(all_positions, all_variants, all_free, all_trapped):
+        for pos, variant, n_agents, free_val, trapped_val in zip(all_positions, all_variants, all_agents, all_free, all_trapped):
             base_color = color_map[variant]
             light_color = _mix_with_white(base_color, 0.55)
             ax.bar(pos, free_val, width=bar_width * 0.9, color=base_color, edgecolor='black', linewidth=2.5, zorder=3)
             ax.bar(pos, trapped_val, width=bar_width * 0.9, bottom=free_val, color=light_color, edgecolor='black', linewidth=2.5, zorder=3)
+
+            trt_pct = trt_lookup.get((variant, n_agents))
+            if trt_pct is not None:
+                total_val = free_val + trapped_val
+                expected_free = (1.0 - trt_pct / 100.0) * total_val
+                half_width = (bar_width * 0.9) / 2.0
+                ax.plot(
+                    [pos - half_width, pos + half_width], [expected_free, expected_free],
+                    color='black', linestyle=':', linewidth=4, zorder=6,
+                )
+                has_cutoff_line = True
 
         group_centers = [start + (group_width - bar_width) / 2 for start in group_starts]
         ax.set_xticks(group_centers)
@@ -3931,14 +3964,15 @@ def show_tpb_by_partition_bar(save_path=None, dpi=None, consensus_order=None):
         spine.set_linewidth(COMBINED_BOXPLOT_FRAME_LINEWIDTH)
     ax.tick_params(axis='both', which='major', labelsize=36 * font_scale)
 
-    legend_handles = [
-        Patch(facecolor=color_map[variant], alpha=0.78, label=_combined_variant_legend_label(variant, plot_df))
-        for variant in ordered_variants
-    ]
-    legend_handles += [
-        Patch(facecolor='dimgray', edgecolor='black', label='Outside trap'),
-        Patch(facecolor='lightgray', edgecolor='black', label='Inside trap'),
-    ]
+    legend_handles = []
+    for variant in ordered_variants:
+        variant_label = _combined_variant_legend_label(variant, plot_df)
+        base_color = color_map[variant]
+        light_color = _mix_with_white(base_color, 0.55)
+        legend_handles.append(Patch(facecolor=base_color, alpha=0.78, edgecolor='black', label=f'Free {variant_label}'))
+        legend_handles.append(Patch(facecolor=light_color, alpha=0.78, edgecolor='black', label=f'Trapped {variant_label}'))
+    if has_cutoff_line:
+        legend_handles.append(Line2D([0], [0], color='black', linestyle=':', linewidth=4, label='Expected cutoff (from TRT)'))
     legend = ax.legend(
         handles=legend_handles,
         loc='center left',
@@ -4610,6 +4644,192 @@ def show_agreement_boxplot_combined(save_path=None, dpi=None):
     trim_toggle.observe(_on_trim_toggle, names='value')
     display(widgets.HBox([trim_toggle]), preview_out)
     _render(False)
+
+
+def _compute_agreement_by_partition_rows(trim_enabled=False):
+    """Per-run Agreement Efficiency (AE) rows, split by whether the observed
+    blocks were produced while their producer was inside the trap zone
+    ('Trapped') or outside it ('Free'). For each run and partition:
+
+        100 * (observations of that partition's main-chain blocks
+               / total observations across the whole run)
+
+    i.e. the denominator is the same overall acceptance count used by the
+    unpartitioned AE metric, so the two partitions' percentages add up to the
+    run's overall AE. Produces up to two rows per run (one per partition); a
+    partition with zero blocks in that run is skipped entirely. Requires
+    zone.csv to be loaded to identify trapped blocks — without it, every block
+    is 'Free' and no 'Trapped' rows are produced.
+    """
+    loaded_blocks = globals().get('loaded_blocks', {})
+    loaded_data = globals().get('loaded_data', {})
+    loaded_zones = globals().get('loaded_zones', {})
+    exp_choices = sorted(loaded_blocks.keys())
+    rows = []
+
+    for exp_key in exp_choices:
+        consensus, num_agents = _extract_config_info(exp_key)
+        if consensus is None or num_agents is None:
+            continue
+
+        for rep_name, blocks_dict in loaded_blocks.get(exp_key, {}).items():
+            if not isinstance(blocks_dict, dict) or not blocks_dict:
+                continue
+
+            block_frames = [df for df in blocks_dict.values() if isinstance(df, pd.DataFrame) and not df.empty]
+            if not block_frames:
+                continue
+
+            combined = pd.concat(block_frames, ignore_index=True)
+            if 'block_hash' not in combined.columns or 'observer_id' not in combined.columns:
+                continue
+
+            combined = combined.copy()
+            combined['block_hash'] = combined['block_hash'].astype(str)
+            combined['observer_id'] = combined['observer_id'].astype(str)
+
+            observer_ids = set(combined['observer_id'].dropna().astype(str).values)
+            if not observer_ids:
+                continue
+
+            filtered = combined
+
+            if trim_enabled:
+                if 'received_at' not in combined.columns:
+                    continue
+
+                combined['_received_at_num'] = pd.to_numeric(combined['received_at'], errors='coerce')
+                fully_accepted_times = []
+
+                for _, block_df in combined.groupby('block_hash', sort=False):
+                    block_observers = set(block_df['observer_id'].dropna().astype(str).values)
+                    if block_observers == observer_ids:
+                        max_received = block_df['_received_at_num'].max(skipna=True)
+                        if pd.notna(max_received):
+                            fully_accepted_times.append(float(max_received))
+
+                if not fully_accepted_times:
+                    continue
+
+                cutoff = max(fully_accepted_times)
+                filtered = combined[
+                    combined['_received_at_num'].notna() & (combined['_received_at_num'] <= cutoff)
+                ].copy()
+
+                if filtered.empty:
+                    continue
+
+            observations_set = set(filtered['block_hash'].dropna().astype(str).unique())
+
+            robots_dict = loaded_data.get(exp_key, {}).get(rep_name, {}) if isinstance(loaded_data, dict) else {}
+            main_chain_df = get_main_chain(robots_dict) if robots_dict else None
+
+            main_hashes: Set[str] = set()
+            if isinstance(main_chain_df, pd.DataFrame):
+                candidates = ['HASH', 'hash', 'block_hash', 'BLOCK_HASH', 'Hash', 'hash_id']
+                for c in candidates:
+                    if c in main_chain_df.columns:
+                        vals = main_chain_df[c].astype(str).dropna().unique()
+                        intersect = set(vals).intersection(observations_set)
+                        if intersect:
+                            main_hashes.update(intersect)
+                if not main_hashes:
+                    for c in main_chain_df.columns:
+                        if main_chain_df[c].dtype == object or pd.api.types.is_string_dtype(main_chain_df[c]):
+                            vals = main_chain_df[c].astype(str).dropna().unique()
+                            intersect = set(vals).intersection(observations_set)
+                            if intersect:
+                                main_hashes.update(intersect)
+                                break
+
+            if not main_hashes:
+                continue
+
+            partition_by_hash = _classify_block_partition_by_hash(exp_key, rep_name, blocks_dict, loaded_zones)
+            if not partition_by_hash:
+                continue
+
+            total_observations = int(len(filtered))
+            if total_observations <= 0:
+                continue
+
+            for partition_name, want_trapped in (('Free', False), ('Trapped', True)):
+                partition_hashes = {h for h, trapped in partition_by_hash.items() if trapped == want_trapped}
+                if not partition_hashes:
+                    continue
+
+                partition_mainchain_hashes = partition_hashes & main_hashes
+                obs_mainchain_count = int(filtered['block_hash'].isin(partition_mainchain_hashes).sum())
+                mainchain_obs_pct = 100.0 * (obs_mainchain_count / float(total_observations))
+
+                rows.append({
+                    'consensus': consensus,
+                    'num_agents': num_agents,
+                    'rep': rep_name,
+                    'exp_key': exp_key,
+                    'partition': partition_name,
+                    'mainchain_obs_pct': mainchain_obs_pct,
+                    'observations_of_mainchain': obs_mainchain_count,
+                    'total_observations': total_observations,
+                    'n_robots': int(len(observer_ids)),
+                })
+
+    return rows
+
+
+def _partition_variant_legend_label(variant, plot_df):
+    """Legend label for the Free/Trapped partition boxplot: '1#PoA' -> 'Free
+    PoA', '2#PoA' -> 'Trapped PoA'."""
+    idx, base, _ = _split_consensus_variant(variant)
+    if idx is None:
+        return variant
+    partition_name = {1: 'Free', 2: 'Trapped'}.get(idx, f'P{idx}')
+    return f"{partition_name} {base}"
+
+
+def show_agreement_by_partition_boxplot(save_path=None, dpi=None, consensus_order=None, trim_enabled=False):
+    """Combined single-panel AE boxplot split by trap partition instead of by
+    experiment: for each consensus protocol, one box for AE computed only over
+    blocks produced outside the trap zone ('Free', base color) and one for AE
+    computed only over blocks produced inside it ('Trapped', lighter shade) —
+    same grouped-by-agent-count layout and styling as the experiment-separated
+    combined boxplots. Requires zone.csv to be loaded to identify trapped
+    blocks — without it, every block counts as 'Free' and no 'Trapped' box is
+    drawn.
+    """
+    if 'loaded_blocks' not in globals() or not globals().get('loaded_blocks'):
+        print("No `loaded_blocks` available. Use the picker and click Load data first.")
+        return
+    if not globals().get('loaded_zones'):
+        print("Note: no `loaded_zones` (zone.csv) data loaded — every block will show as 'Free' and no 'Trapped' box will be drawn.")
+
+    plot_df = pd.DataFrame(_compute_agreement_by_partition_rows(trim_enabled=trim_enabled))
+    if plot_df.empty:
+        print("No trap-partition agreement data found. Ensure block observation JSON, CSVs, and zone.csv are loaded.")
+        return
+
+    # Encode partition as an "N#" prefix (1=Free, 2=Trapped) to reuse the
+    # existing per-base shading machinery; apply_experiment_merge=False keeps
+    # this immune to the (unrelated) SEPARATE_EXPERIMENT_DATA toggle, and
+    # legend_label_fn overrides the default 'S<n>' experiment-style label.
+    partition_index = {'Free': 1, 'Trapped': 2}
+    plot_df = plot_df.copy()
+    plot_df['consensus'] = plot_df.apply(lambda r: f"{partition_index[r['partition']]}#{r['consensus']}", axis=1)
+
+    _create_combined_consensus_boxplot(
+        plot_df=plot_df,
+        metric_column='mainchain_obs_pct',
+        ylabel='AE [%]',
+        plot_title=None,
+        ylim=(0, 100),
+        no_data_message='No trap-partition agreement data found.',
+        save_path=save_path,
+        dpi=dpi,
+        plot_name='AE_by_partition',
+        consensus_order=consensus_order or ['C-PoA', 'R-PoA', 'PoA', 'PoW'],
+        apply_experiment_merge=False,
+        legend_label_fn=_partition_variant_legend_label,
+    )
 
 
 def show_block_production_by_robot(save_path=None, dpi=None):
