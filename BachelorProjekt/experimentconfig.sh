@@ -12,6 +12,18 @@ export TOYCHFOLDER="$MAINFOLDER/toychain"
 # [[ ":$PATH:" != *":$MAINFOLDER/scripts:"* ]] && export PATH=$PATH:$MAINFOLDER/scripts
 
 # [SC]
+# Which consensus protocol the robots run. One of:
+#   ProofOfAuthority  -> PoA  (fixed round-robin block producer rotation)
+#   ProofOfWork       -> PoW  (classic proof-of-work mining)
+#   ProofOfConnection -> C-PoA or R-PoA (see below) -- ranks/picks the next
+#                         block producer by recent network connectivity
+#                         (C-PoA) or at random (R-PoA)
+#   ProofOfStake      -> PoS  (not used/evaluated in the thesis)
+# C-PoA vs. R-PoA are BOTH "ProofOfConnection" here; which one you actually
+# get is controlled by params['scs']['update'] in loop_functions/params.py
+# (see run-experiment.sh's `loopconfig "scs" "update" ...` calls):
+#   "peer_index" -> connectivity-ranked producer selection = C-PoA
+#   "no_update"  -> random producer selection               = R-PoA
 export CONSENSUS=ProofOfConnection
 case "$CONSENSUS" in
 	"ProofOfAuthority")  export SCNAME="poa_w" ;;
@@ -28,6 +40,13 @@ export GENESISFILE="${DOCKERFOLDER}/geth/files/$GENESISNAME.json"
 
 
 # [ARGOS]
+# Which ARGoS scenario/world to load, matching the thesis's S1-S4 scenarios
+# (see Section 3.2.1). CTRL must be set consistently with ARGOSNAME:
+#   ARGOSNAME=greeter  + CTRL=main.py          -> S1 (well-mixed random walk)
+#                                                  or S2 (heterogeneous speed,
+#                                                  toggle with SPEEDUNIFORM below)
+#   ARGOSNAME=obstacle + CTRL=main.py          -> S3 (random walk, obstacle trap)
+#   ARGOSNAME=foraging + CTRL=main_foraging.py -> S4 (foraging)
 export ARGOSNAME=foraging
 export ARGOSFILE="${EXPERIMENTFOLDER}/experiments/${ARGOSNAME}.argos"
 export ARGOSTEMPLATE="${EXPERIMENTFOLDER}/experiments/${ARGOSNAME}.x.argos"
@@ -37,15 +56,24 @@ export CON1="${EXPERIMENTFOLDER}/controllers/${CTRL}"
 
 export RABRANGE="0.5"
 export WHEELNOISE="0"
+# Simulated ticks per simulated second. Also the unit-to-seconds conversion
+# factor for tick-based values elsewhere in the codebase (e.g. block period,
+# C-PoA's peer-connection decay window in loop_functions/params.py).
 export TPS=10
 export DENSITY="2"
+# Robot speed (cm/s). Only used directly when SPEEDUNIFORM=True below.
 export AGENTSPEED=18
-# True = all robots use the same speed, False = seeded symmetric pairs around AGENTSPEED
+# True = all robots move at AGENTSPEED (S1/S3/S4).
+# False = seeded symmetric pairs around AGENTSPEED, e.g. mean 18 with 5 robots
+# could give [15, 21, 13, 23, 18] (S2, heterogeneous-speed scenario).
 export SPEEDUNIFORM=True
 
 
-#export NUMROBOTS=$(echo $NUM1+$NUM2 | bc)
+# Swarm size |N| -- the thesis sweeps this over {5, 10, 15, 20, 25}.
 export NUMROBOTS=5
+
+# Everything below this point (arena/obstacle/patch geometry) is auto-derived
+# from NUMROBOTS, DENSITY, and ARGOSNAME -- no need to edit these by hand.
 
 # obstacle dimensions
 export SCALINGF=$(echo "scale=3 ; sqrt($NUMROBOTS/5)" | bc)
@@ -83,7 +111,12 @@ export PATCHES_COUNT=$(echo "scale=0 ; $ARENADIM*15" | bc)
 
 
 # [TOYCHAIN]
+# NOTE: currently has no effect -- each protocol's actual block period is a
+# fixed BLOCK_PERIOD=10 ticks (1s at TPS=10) hardcoded in its own module under
+# toychain/src/consensus/. Changing this value won't change block timing.
 export BLOCKPERIOD=2
+# Live blockchain explorer web UI (http://EXPLORER_HOST:EXPLORER_PORT) while a
+# run is going. Leave False for normal/batch runs.
 export EXPLORER=False
 export EXPLORER_PATH="$TOYCHFOLDER/src/plugins/toychain-explorer/"
 export EXPLORER_HOST="localhost"
@@ -91,11 +124,17 @@ export EXPLORER_PORT="8765"
 
 # [OTHER]
 export SEED=420
-# When True, set SEED to the repetition number for each repetition
+# When True (default), each repetition's SEED is overridden with REP*42 (see
+# run-experiment.sh's `run()`), so repetitions are reproducible but distinct.
 export REP_SEED=True
+# Real-world wall-clock safety timeout for one run, in MINUTES.
 export TIMELIMIT=100
+# Simulated experiment duration, in SECONDS of simulated time (ARGoS
+# <experiment length="LENGTH" ticks_per_second="TPS"/>). Total control steps
+# per run = LENGTH * TPS.
 export LENGTH=400
 export SLEEPTIME=5
+# Number of repetitions per configuration (the thesis uses 7).
 export REPS=7
 export NOTES="just a test"
 
