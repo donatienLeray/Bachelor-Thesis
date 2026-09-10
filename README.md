@@ -69,7 +69,7 @@ This repository serves two different purposes, and you only need to set up for t
    cd Bachelor-Thesis
    ```
 
-2. That's it for setup — jump to [Generating the plots](#generating-the-plots) for the (one) `pip install` and how to open the notebook. It reads the CSV/JSON logs already committed under [`BachelorProjekt/results/data/`](./BachelorProjekt/results/data/).
+2. That's it for setup — jump to [Generating the plots](#generating-the-plots) for the (one) `pip install` and how to open the notebook. It reads the CSV/JSON logs already committed under [`BachelorProjekt/results/data/`](./BachelorProjekt/results/data/) (used in the thesis).
 
 ### Full setup (run simulations & experiments)
 
@@ -135,7 +135,7 @@ sudo apt install python3-pip
 pip install aenum psutil
 ```
 
-With this done, continue to [Running Simulation](#running-simulation). You'll still want the [Minimal setup](#minimal-setup-view-data--plots-only)'s `pip install` afterward to turn your new logs into plots.
+With this done, continue to [Running Simulation](#running-simulation). You'll still want the [Generating the plots](#generating-the-plots)'s `pip install` afterward to turn your new logs into plots.
 
 ## Running Simulation
 
@@ -178,7 +178,7 @@ To reproduce the thesis's full result set, [`run-experiment.sh`](./BachelorProje
 
 Each scenario block in the script follows the same pattern:
 1. Set the scenario (`ARGOSNAME`, `CTRL`, `SPEEDUNIFORM`) via `config "VAR" value`, which edits [`experimentconfig.sh`](./BachelorProjekt/experimentconfig.sh) in place.
-2. Set R-PoA's parameters (`CONSENSUS=ProofOfConnection`, `scs.update=no_update`) via `loopconfig "dict" "key" value`, which edits `loop_functions/params.py` in place, then loop over swarm sizes calling `run "experimentName/configName"`.
+2. Set R-PoA's parameters (`CONSENSUS=ProofOfConnection`, `scs.update=no_update`) via `loopconfig "dict" "key" value`, which edits [`loop_functions/params.py`](./BachelorProjekt/loop_functions/params.py) in place, then loop over swarm sizes calling `run "experimentName/configName"`.
 3. Repeat for PoA, PoW, and C-PoA (`scs.update=peer_index`) together, looping over both consensus and swarm size.
 
 **To run everything** (takes a very long time — 4 scenarios × 4 protocols × 5 swarm sizes × 30 repetitions):
@@ -188,11 +188,11 @@ cd BachelorProjekt
 ./run-experiment.sh -r -s      # add -sz instead of -s to run headless/faster
 ```
 
-**To run a subset**, edit `run-experiment.sh` directly: comment out whichever `EXP=...` scenario blocks you don't need, or narrow the `for UTIL in $(seq 5 5 25)` swarm-size range / `for consensus in ...` protocol list inside a block. The commented-out `TESTS` block near the top of the file is a template for a single ad-hoc configuration if you'd rather not touch the main blocks at all.
+**To run a subset**, edit [`run-experiment.sh`](./BachelorProjekt/run-experiment.sh) directly: comment out whichever `EXP=...` scenario blocks you don't need, or narrow the `for UTIL in $(seq 5 5 25)` swarm-size range / `for consensus in ...` protocol list inside a block. The commented-out `TESTS` block near the top of the file is a template for a single ad-hoc configuration if you'd rather not touch the main blocks at all.
 
 The helper functions used throughout the script can also be called manually (after `source ./experimentconfig.sh` or `source ./run-experiment.sh`):
-- `config "VAR" value` — set one variable in `experimentconfig.sh`
-- `loopconfig "dict" "key" value` — set one `params['dict']['key']` entry in `loop_functions/params.py` (this is how C-PoA/R-PoA and the peer-connection decay window are controlled, since they live outside `experimentconfig.sh`)
+- `config "VAR" value` — set one variable in [`experimentconfig.sh`](./BachelorProjekt/experimentconfig.sh)
+- `loopconfig "dict" "key" value` — set one `params['dict']['key']` entry in [`loop_functions/params.py`](./BachelorProjekt/loop_functions/params.py) (this is how C-PoA/R-PoA and the peer-connection decay window are controlled, since they live outside [`experimentconfig.sh`](./BachelorProjekt/experimentconfig.sh))
 - `run "experimentName/configName" [-t]` — run `REPS` repetitions of the currently configured settings, writing to `results/data/experiment_<experimentName>/<configName>/`; pass `-t` to run once with no data collection, as a quick smoke test
 
 Each repetition writes the full blockchain and communication log of every robot to CSV under `results/data/experiment_<N>_<name>/<consensus>_<numagents>/<rep>/`, which is what the plotting pipeline below consumes.
