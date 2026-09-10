@@ -8,6 +8,8 @@ This repository contains the full simulation environment, experiment code, and f
 - [Overview](#overview)
 - [Repository structure](#repository-structure)
 - [Setup](#setup)
+  - [Minimal setup (view data & plots only)](#minimal-setup-view-data--plots-only)
+  - [Full setup (run simulations & experiments)](#full-setup-run-simulations--experiments)
 - [Running Simulation](#running-simulation)
 - [Running experiments](#running-experiments)
 - [Generating the plots](#generating-the-plots)
@@ -53,7 +55,27 @@ A second protocol, **Randomized PoA (R-PoA)**, is introduced purely as a control
 
 ## Setup
 
-### 1. Clone the repository
+This repository serves two different purposes, and you only need to set up for the one you actually want:
+
+- **Just want to look at the results and regenerate the thesis figures?** → [Minimal setup](#minimal-setup-view-data--plots-only). It's pure Python, works on any OS, and doesn't touch ARGoS at all.
+- **Want to run new simulations/experiments yourself?** → [Full setup](#full-setup-run-simulations--experiments). This additionally requires **ARGoS**, which only builds and runs on **Ubuntu 20.04 or 22.04** — everything else in this section exists to support that.
+
+### Minimal setup (view data & plots only)
+
+1. Clone the repository — submodules aren't needed for this path, since the plotting code never touches `toychain`/`argos-python`:
+
+   ```
+   git clone https://github.com/donatienLeray/Bachelor-Thesis.git
+   cd Bachelor-Thesis
+   ```
+
+2. That's it for setup — jump to [Generating the plots](#generating-the-plots) for the (one) `pip install` and how to open the notebook. It reads the CSV/JSON logs already committed under [`BachelorProjekt/results/data/`](./BachelorProjekt/results/data/).
+
+### Full setup (run simulations & experiments)
+
+> ⚠️ Requires **Ubuntu 20.04 or 22.04** specifically — ARGoS (and the e-puck plugin below) only build and run on these.
+
+#### 1. Clone the repository
 
 ```
 git clone --recurse-submodules https://github.com/donatienLeray/Bachelor-Thesis.git
@@ -66,9 +88,7 @@ If you already cloned without submodules:
 git submodule update --init --recursive
 ```
 
-### 2. Install ARGoS
-
-Assumes a clean install of Ubuntu 20.04 or 22.04.
+#### 2. Install ARGoS
 
 ```
 sudo apt install git build-essential cmake g++ libfreeimage-dev libfreeimageplus-dev freeglut3-dev \
@@ -92,7 +112,7 @@ cmake ../src && make -j4 && make doc
 sudo make install && sudo ldconfig
 ```
 
-### 3. Install the e-puck plugin
+#### 3. Install the e-puck plugin
 
 ```
 git clone https://github.com/demiurge-project/argos3-epuck.git
@@ -101,7 +121,7 @@ cmake ../src && make
 sudo make install && sudo ldconfig
 ```
 
-### 4. Build the ARGoS–Python bridge and install Python deps
+#### 4. Build the ARGoS–Python bridge and install Python deps
 
 ```
 sudo apt-get install g++ cmake git libboost-python-dev
@@ -114,6 +134,8 @@ cmake .. && make
 sudo apt install python3-pip
 pip install aenum psutil
 ```
+
+With this done, continue to [Running Simulation](#running-simulation). You'll still want the [Minimal setup](#minimal-setup-view-data--plots-only)'s `pip install` afterward to turn your new logs into plots.
 
 ## Running Simulation
 
@@ -208,6 +230,6 @@ This project builds on:
 
 I would like to thank:
 
-- **[Alexandre Melo Pacheco](https://www.researchgate.net/profile/Alexandre-Pacheco-7)** for remote supervision, support, and helpful discussions 
+- **[Alexandre Melo Pacheco](https://www.researchgate.net/profile/Alexandre-Pacheco-7)**: the main source of knowledge behind this thesis, whose work and ideas inspired it from the start, and who provided remote supervision, support, and helpful discussions throughout
 - **[Andreagiovanni Reina](https://www.giovannireina.com/index.php)** for supervising this thesis and providing valuable guidance
 - **[Michael Grossniklaus](https://www.uni-konstanz.de/centre-for-human-data-society/people/prof-dr-michael-grossniklaus/)** for evaluating this thesis
