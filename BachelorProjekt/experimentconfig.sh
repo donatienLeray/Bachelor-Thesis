@@ -134,8 +134,8 @@ export TIMELIMIT=100
 # per run = LENGTH * TPS.
 export LENGTH=400
 export SLEEPTIME=5
-# Number of repetitions per configuration (the thesis uses 7).
-export REPS=7
+# Number of repetitions per configuration (the thesis uses 30).
+export REPS=30
 export NOTES="just a test"
 
 

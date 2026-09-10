@@ -32,7 +32,7 @@ A second protocol, **Randomized PoA (R-PoA)**, is introduced purely as a control
 .
 ├── argos-python/             # ARGoS <-> Python controller bridge (submodule)
 ├── toychain/                 # Toychain blockchain, incl. consensus protocol implementations (submodule)
-│   └── src/consensus/        # ProofOfWork (PoW), ProofOfAuthority (PoA), ProofOfConnection (C-PoA/R-PoA), 
+│   └── src/consensus/        # ProofOfWork (PoW), ProofOfAuthority (PoA), ProofOfConnection (C-PoA/R-PoA),ProoOfStake (PoS) 
 ├── BachelorProjekt/
 │   ├── controllers/           # Robot controllers (main.py / main_foraging.py) + sensor/actuator helpers
 │   ├── MarketForaging/        # Foraging-scenario sensors/actuators used by main_foraging.py (vendored from donatienLeray/toychain-argos)
@@ -126,9 +126,13 @@ The parameters you'll actually want to change:
 | `CONSENSUS` | Protocol: `ProofOfAuthority` (PoA), `ProofOfWork` (PoW), `ProofOfConnection` (C-PoA *or* R-PoA — see below), `ProofOfStake` (unused in the thesis) |
 | `ARGOSNAME` + `CTRL` | Scenario: `greeter`+`main.py` = S1/S2, `obstacle`+`main.py` = S3, `foraging`+`main_foraging.py` = S4 |
 | `NUMROBOTS` | Swarm size `\|N\|` (thesis sweeps `{5, 10, 15, 20, 25}`) |
+| `DENSITY` | Density of agents in arena (unchanged in the thesis). Size and from of the arena is automatically derived from `NUMROBOTS`, `DENSITY`, and `ARGOSNAME`|
 | `SPEEDUNIFORM` | `True` = all robots same speed; `False` = symmetric random pairs around `AGENTSPEED` (used for S2) |
+| `RABRANGE` | Communication range of the agents (unchanged in the thesis)|
+| `WHEELNOISE` | (0 in the thesis)|
 | `LENGTH` / `TPS` | Simulated run duration in seconds / ticks-per-second (`LENGTH * TPS` = total control steps) |
 | `REPS` / `REP_SEED` | Repetitions per config, and whether each gets its own seed |
+| `EXPLORER` | Live blockchain explorer web UI (http://`EXPLORER_HOST`:`EXPLORER_PORT`) while a run is going.|
 
 C-PoA vs. R-PoA are **both** `CONSENSUS=ProofOfConnection`; which one you get depends on `params['scs']['update']` in `loop_functions/params.py` (`"peer_index"` = connectivity-ranked = C-PoA, `"no_update"` = random = R-PoA) — see the comment above `CONSENSUS` in [`experimentconfig.sh`](./BachelorProjekt/experimentconfig.sh) for details.
 
@@ -155,7 +159,7 @@ Each scenario block in the script follows the same pattern:
 2. Set R-PoA's parameters (`CONSENSUS=ProofOfConnection`, `scs.update=no_update`) via `loopconfig "dict" "key" value`, which edits `loop_functions/params.py` in place, then loop over swarm sizes calling `run "experimentName/configName"`.
 3. Repeat for PoA, PoW, and C-PoA (`scs.update=peer_index`) together, looping over both consensus and swarm size.
 
-**To run everything** (takes a long time — 4 scenarios × 4 protocols × 5 swarm sizes × 7 repetitions):
+**To run everything** (takes a very long time — 4 scenarios × 4 protocols × 5 swarm sizes × 30 repetitions):
 
 ```
 cd BachelorProjekt
@@ -174,26 +178,21 @@ Each repetition writes the full blockchain and communication log of every robot 
 
 ## Generating the plots
 
-All figures in the thesis are produced from these raw per-run [CSV logs](./Bachelor-Thesis/tree/main/BachelorProjekt/results/data) via:
-
-```
-BachelorProjekt/results/plots.ipynb
-```
-
-which, together with the helper module [`plothelpers.py`](./BachelorProjekt/results/plothelpers.py) in the same folder, loads the raw logs, reconstructs the canonical chain per run, computes the metrics from Section 3.3 of the thesis (AE, BI, BPD, Degree of Decentralization, Safety, and the scenario-specific TRT/ICF), and renders every figure exactly as it appears in the thesis.
+All figures in the thesis are produced from these raw per-run [CSV logs](./Bachelor-Thesis/tree/main/BachelorProjekt/results/data) via [`plots.ipymn`](./BachelorProjekt/results/plots.ipynb),which, together with the helper module [`plothelpers.py`](./BachelorProjekt/results/plothelpers.py) in the same folder, loads the raw logs, reconstructs the canonical chain per run, computes the metrics from Section 3.3 of the thesis (AE, BI, BPD, Degree of Decentralization, Safety, and the scenario-specific TRT/ICF), and renders every figure exactly as it appears in the thesis.
 
 This needs its own set of Python packages, separate from the experiment-running deps above:
 
 ```
 pip install pandas numpy matplotlib ipywidgets jupyter
 ```
+How exactly to load the data and generate the plots is explanied directly in [`plots.ipymn`](./BachelorProjekt/results/plots.ipynb).
 
 ```
 cd BachelorProjekt/results
 jupyter notebook plots.ipynb
 ```
 
-No path setup is needed here either — [`plothelpers.py`](./BachelorProjekt/results/plothelpers.py)resolves everything relative to the notebook's own folder or to the current user's home directory.
+Autosaved plots, all plots used in the  [`Bachelor_Thesis.pdf`](./Bachelor_Thesis.pdf) as well as some supplementary ones can be found in [`BachelorProjekt/results/plots/`](./BachelorProjekt/results/plots/).
 
 
 ## References

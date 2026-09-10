@@ -179,7 +179,7 @@ run() {
 
 # Meta parameters
 config "TPS" 10
-config "REPS" 7
+config "REPS" 30
 config "LENGTH" 400
 config "REP_SEED" "True"
 
